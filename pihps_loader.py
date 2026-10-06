@@ -172,7 +172,9 @@ def load_pihps(paths: str | list[str], series_name: str) -> pd.Series:
     """Load and merge one or many PIHPS files (globs allowed) for one series."""
     if isinstance(paths, str):
         paths = [paths]
-    files = sorted({f for p in paths for f in (glob.glob(p) or [p])})
+    # An unmatched glob contributes nothing; a plain missing path is kept so it fails loudly.
+    files = sorted({f for p in paths
+                    for f in (glob.glob(p) or ([] if glob.has_magic(p) else [p]))})
     if not files:
         raise FileNotFoundError(f"No PIHPS files match {paths}")
     parts = [load_one(f, series_name) for f in files]
