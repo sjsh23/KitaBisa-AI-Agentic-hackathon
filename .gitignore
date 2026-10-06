@@ -1,0 +1,4 @@
+out/
+test_out/
+tests/FAKE_*
+__pycache__/
