@@ -127,6 +127,19 @@ Hard rules:
 - **D-3** Every number in the deck that comes from simulated data is labelled "simulated". RPT accuracy is reported as "on simulated data vs a classical baseline", never as real-world accuracy.
 - **D-4** Assumptions (supplier parameters, downtime cost Rp150 juta/day, GKP not GKR, Idul Fitri dates) live in `data_gen/config.py` and on one assumptions slide.
 
+### Dataset status (generated 6 Oct 2026)
+
+- **Price anchor (real):** downloaded with `fetch_pihps.py` from the PIHPS website endpoint, 2 Sep 2024 to 30 Sep 2026, 543 daily observations of "Gula Pasir Lokal", Rp16,250 to Rp17,600 per kg. Stored in `data/pihps/pihps_long.csv` plus the raw monthly JSON in `data/pihps/raw/`.
+- **Market type:** `price_type_id=3` was used. It is inferred to be Pedagang Besar because its prices sit between the retail series (ids 1, 2) and the producer series (id 4). Not yet confirmed against the website table (see section 17).
+- **Simulated output:** 434 PO lines (429 closed, 5 open), 10 suppliers, 4 buyers, seed 42, history 2024-10-01 to AS_OF 2026-09-30. `rpt_po_lines` split: 340 train, 74 test, 15 holdout_recent, 5 predict. Two runs with the same seed and PIHPS file gave byte-identical files.
+- **Validation (simulated data, `validation_report.md`):** monthly PO price vs anchor correlation 0.956; BUYER03 sends 24% of its POs to 100107 vs 3 to 5% for the other buyers; rainy season late rate 30% vs 19% otherwise; logistic regression AUC 0.694, gradient boosting AUC 0.603.
+- **Known gaps against this PRD** (each is an open decision in section 17):
+  - S2 price increase came out at +2.7% (Rp18,000 to Rp18,500), below the 3% trigger in FR-DET-2.
+  - Supplier 100108 drift is weak in the observed data: late rate 11% before March 2026, 15% after.
+  - Lebaran effect is not visible (17% late inside the window, n=18, vs 24% outside); supplier 100109 has only 5 POs.
+- **Location:** the generator files currently sit at the repository root and write to `out/`, not `data_gen/` and `data_gen/out/` as section 13 proposes. Rule D-1 applies to `out/_truth/` and `world.py` in the meantime.
+- **Running it on Windows:** `python` is not on PATH on the dev machine; use `py -3.11 generate.py` and `py -3.11 validate.py`.
+
 ## 7. Functional requirements
 
 IDs are referenced in code comments, tests and commits.
@@ -236,7 +249,7 @@ Backup: recorded video of the same run; switch immediately if live fails.
 ```
 gesit/
   CLAUDE.md  PRD.md  README.md
-  data_gen/        synthetic data generator (done; needs real PIHPS export)
+  data_gen/        synthetic data generator (done; files are still at the repo root, move pending, see section 17)
   adapters/        S/4-shaped data access (CSV/DynamoDB now, OData later)
   tools/           Lambda handlers for the MCP tools (section 8)
   scoring/         expected-cost scoring, reliability posterior (pure Python, unit-tested)
@@ -256,7 +269,7 @@ gesit/
 | Dates | Deliverable | Status |
 |---|---|---|
 | by 5 Oct | Accounts, budget alert, BAIP request, role split | in progress |
-| by 6 Oct | Synthetic data generator | done (waiting for real PIHPS export) |
+| by 6 Oct | Synthetic data generator | done; dataset generated on real PIHPS prices on 6 Oct (market type id to confirm, see section 17) |
 | 5-11 Oct | Core loop in terminal: disruption, scoring, explanation, draft PO (RPT stubbed) | |
 | 12-18 Oct | SAP-RPT on AI Core, Gen AI Hub, deploy to AgentCore, Gateway, Policy | |
 | 19-25 Oct | Integrity Guard, Monte Carlo eval, reliability update, Streamlit UI. **Freeze 25 Oct** | |
@@ -289,6 +302,11 @@ Mentoring questions: Smartsheet on Mondays 12, 19, 26 Oct before 16:00 WIB.
 - Approval threshold: Rp150 juta proposed (section 7.4), confirm with team.
 - Whether cooking oil is added as a second material (only after freeze criteria are met; data_gen supports it).
 - Approved-panel field: add a custom field (e.g. LFA1-ZZPANEL) and one off-panel quote to data_gen to demo POL-2.
+- S2 trigger: the generated price increase is +2.7%, under the 3% rule in FR-DET-2. Either script S2 to a fixed increase above 3% or lower the threshold.
+- Supplier 100108 drift: too weak in the generated data for the reliability chart (demo step 3e). Decide whether to strengthen the drift in `config.py`.
+- PIHPS market type: confirm on the website that `price_type_id=3` is Pedagang Besar (Gula Pasir Lokal should read Rp17,500 to Rp17,550 for 21 to 25 Sep 2026).
+- Repository layout: move the generator from the repo root into `data_gen/` (section 13), and decide whether to commit `data/pihps/pihps_long.csv` so teammates can regenerate without downloading.
 
 ## Changelog
 - 2026-10-06: First version, from proposal, feedback plan and briefing; data generator done.
+- 2026-10-06: Dataset generated on a real PIHPS download (section 6, Dataset status). Fixed unmatched-glob crash in `pihps_loader.load_pihps`. Added four open decisions (S2 trigger, 100108 drift, PIHPS market type, repository layout). No requirement changed.
