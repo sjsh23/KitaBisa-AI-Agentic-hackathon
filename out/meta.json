@@ -1,0 +1,14 @@
+{
+  "seed": 42,
+  "history_start": "2024-10-01",
+  "as_of": "2026-09-30",
+  "pihps_files": [
+    "data/pihps/*.xlsx",
+    "data/pihps/pihps_long.csv"
+  ],
+  "pihps_market": "Pedagang Besar",
+  "price_scale": 1.0,
+  "po_lines": 434,
+  "closed": 429,
+  "open": 5
+}

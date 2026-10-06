@@ -1,0 +1,38 @@
+[
+  {
+    "id": "S1",
+    "type": "delay_notice",
+    "lifnr": "100101",
+    "matnr": "RM-GULA-001",
+    "notice_date": "2026-09-30",
+    "original_eindt": "2026-10-04",
+    "new_eindt": "2026-10-11",
+    "delay_days": 7,
+    "message": "PT Sinar Manis Lampung reports a 7-day delay on its sugar delivery (rough seas on the Bakauheni crossing).",
+    "ebeln": "4500000431"
+  },
+  {
+    "id": "S2",
+    "type": "price_increase",
+    "lifnr": "100103",
+    "matnr": "RM-GULA-001",
+    "notice_date": "2026-09-30",
+    "old_netpr": 18000.0,
+    "new_netpr": 18500.0,
+    "increase_pct": 2.7,
+    "anchor_note": "Size of the increase = largest 30-day rise in the PIHPS series in the history window, ending 2025-01-16.",
+    "message": "CV Tebu Makmur Sejahtera asks to revise the price by +2.7% before confirming the PO.",
+    "ebeln": "4500000432"
+  },
+  {
+    "id": "S3",
+    "type": "capacity_shortfall",
+    "lifnr": "100104",
+    "matnr": "RM-GULA-001",
+    "notice_date": "2026-09-30",
+    "ordered_kg": 12000,
+    "deliverable_kg": 4800.0,
+    "message": "PT Cepat Antar Pangan can only deliver 40% of the ordered quantity on time; the rest would follow 10 days later.",
+    "ebeln": "4500000433"
+  }
+]
