@@ -107,7 +107,7 @@ Optional, only if time allows: Joule Studio front end (needs SAP BAIP sub-accoun
 
 ## 6. Data
 
-Built by the generator in `data_gen/` (see `data_gen/README.md`). Prices are anchored on **PIHPS (Bank Indonesia), market type Pedagang Besar (wholesale), series "Gula Pasir Lokal"**; supplier behaviour is simulated from hidden parameters.
+Built by the generator in `data_gen/` (see `data_gen/README.md`). Every CSV file and column is described in `docs/data_dictionary.md`; update that file whenever the generator adds or changes a column. Prices are anchored on **PIHPS (Bank Indonesia), market type Pedagang Besar (wholesale), series "Gula Pasir Lokal"**; supplier behaviour is simulated from hidden parameters.
 
 | Table / file | Content |
 |---|---|
@@ -315,3 +315,4 @@ Decided on 8 Oct 2026 (team to object by 9 Oct, otherwise these stand):
 - 2026-10-06: Dataset generated on a real PIHPS download (section 6, Dataset status). Fixed unmatched-glob crash in `pihps_loader.load_pihps`. Added four open decisions (S2 trigger, 100108 drift, PIHPS market type, repository layout). No requirement changed.
 - 2026-10-08: Moved the generator, PIHPS input and output from the repo root into `data_gen/` (section 13). Regenerated output is byte-identical to the committed dataset. The PIHPS CSV and raw JSON stay committed so teammates can regenerate without downloading. Closed the repository layout decision. No requirement changed.
 - 2026-10-08: Dataset regenerated. S2 scripted to +6% (was +2.7%, under the FR-DET-2 trigger); supplier 100108 drift strengthened (late rate 11% before March 2026, 33% after, simulated); `LFA1.ZZPANEL` and off-panel supplier 100111 added for POL-2; PIHPS `price_type_id=3` confirmed as Pedagang Besar. Section 6 table and Dataset status updated, four open decisions closed, dataset size added as an open decision. No FR, POL or NFR changed.
+- 2026-10-08: Added `docs/data_dictionary.md` (per-file and per-column description of every CSV) and linked it from section 6. No requirement changed.

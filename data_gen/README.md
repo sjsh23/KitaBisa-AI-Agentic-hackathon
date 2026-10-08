@@ -50,6 +50,8 @@ Same seed + same PIHPS files = identical output.
 
 ## What comes out
 
+Column-by-column descriptions are in [docs/data_dictionary.md](../docs/data_dictionary.md).
+
 | File | Who sees it | Content |
 |---|---|---|
 | `LFA1, MAKT, EKKO, EKPO, EKET, EKBE.csv` | agent | supplier master (custom field `ZZPANEL`: `X` = approved panel), material, PO header/item/schedule line, goods receipts (S/4 field names) |
