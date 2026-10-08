@@ -1,6 +1,3 @@
-<<<<<<< HEAD
-# KitaBisa-AI-Agentic-hackathon
-=======
 # GESIT synthetic procurement data (PIHPS-anchored)
 
 Generates 24 months of S/4HANA-style purchasing history for one F&B raw
@@ -97,4 +94,3 @@ python tests/make_fake_pihps.py
 python generate.py --pihps tests/FAKE_pihps_export.xlsx --out test_out
 ```
 Never use that file for the demo.
->>>>>>> origin/master
