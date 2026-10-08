@@ -6,6 +6,9 @@ Supplier behaviour (reliability, seasonality, capacity, a planted buyer bias)
 is simulated from hidden parameters, so the same "world" can later replay
 "what if we had picked supplier B" for the Monte Carlo evaluation.
 
+All commands below run from inside `data_gen/` (`cd data_gen`). On Windows use
+`py -3.11` instead of `python`.
+
 ## 1. Get the PIHPS data (on your own laptop)
 
 Option A, website (simplest, always works):
@@ -35,7 +38,7 @@ If the Excel layout is not recognised, save a plain `date,price` CSV into
 ## 2. Generate and validate
 
 ```bash
-pip install pandas numpy openpyxl scikit-learn
+pip install -r ../requirements.txt
 python generate.py          # writes out/
 python validate.py          # writes out/validation_report.md
 ```
@@ -90,7 +93,7 @@ out, and compare total cost.
 `tests/make_fake_pihps.py` writes an obviously FAKE file in PIHPS layout so
 the pipeline can be tested offline:
 ```bash
-python tests/make_fake_pihps.py
-python generate.py --pihps tests/FAKE_pihps_export.xlsx --out test_out
+python ../tests/make_fake_pihps.py ../tests/FAKE_pihps_export.xlsx
+python generate.py --pihps ../tests/FAKE_pihps_export.xlsx --out test_out
 ```
 Never use that file for the demo.
