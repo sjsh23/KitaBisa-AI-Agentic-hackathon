@@ -6,8 +6,15 @@ imported below; treat them as the source of truth.
 
 @PRD.md
 
+Current progress (what is done, what is next) is tracked in the working log, imported below.
+
+@WORKING.md
+
 ## Working rules
 
+- Before starting a task, read `WORKING.md` to see where the project stands.
+- After finishing a task, update `WORKING.md` in the same change: done log, status table,
+  current position, next up and the "Last updated" date.
 - Before starting a task, find the requirement IDs it touches (FR-*, POL-*, NFR-*, D-*)
   and mention them in the plan, code comments and commit message.
 - If a task conflicts with PRD.md or needs a new requirement, stop and ask.
