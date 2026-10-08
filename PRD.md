@@ -6,11 +6,47 @@ Agentic AI Hackathon 2026, Track A: Intelligent Supply Chain (Sokrates with AWS,
 | | |
 |---|---|
 | Status | Building toward Final/Demo Day, **Saturday 31 October 2026** (in person, 15 min incl. Q&A, **English**) |
-| Last updated | 6 October 2026 |
+| Last updated | 8 October 2026 |
 | Feature freeze | 25 October 2026 |
 | Source documents | Accepted proposal, finalist work plan (feedback), participant briefing deck |
 
 When a requirement changes, update this file in the same change and add a line to the Changelog at the end.
+
+---
+
+## 0. Progress flag (read this first)
+
+**Progress as of 8 October 2026.** Every new session: read this block before planning, and verify it against the repository (folders present, `git log`) because it can be stale. When a task changes a status below, update this block, the matching marker in the section itself and the "Progress as of" date in the same change.
+
+**YOU ARE HERE:** milestone "5-11 Oct, core loop in terminal" (section 14). The data work is finished; no agent, scoring, tool or adapter code exists yet.
+
+**Next up, in order:**
+1. `adapters/`: read the CSVs in `data_gen/out/` (never `_truth/`) with SAP field names (D-1, D-2).
+2. `scoring/`: expected cost and Beta reliability posterior with tests (FR-SEL-2, FR-EVA-2, FR-EVA-3).
+3. `tools/`: the section 8 tools as plain Python functions, `predict_delay_risk` stubbed with the posterior fallback (FR-DET-4).
+4. Detection rules (FR-DET-1 to FR-DET-3), then a local Strands supervisor (FR-SUP-1 to FR-SUP-3).
+5. Done when `python -m agents.run S1` prints the plan, the ranked table, an explanation under 120 words (FR-SEL-4) and a draft PO (FR-ACT-1).
+
+Status values: `DONE`, `IN PROGRESS`, `NOT STARTED`, `BLOCKED` (say on what).
+
+| Section | Scope | Status | Evidence or what is missing |
+|---|---|---|---|
+| 6 | Data and generator | DONE | `data_gen/`, dataset regenerated 8 Oct, `docs/data_dictionary.md`. Dataset size is still an open decision (section 17) |
+| 7.1 | Supervisor (FR-SUP) | NOT STARTED | no `agents/` |
+| 7.2 | Disruption Detection (FR-DET) | NOT STARTED | no `agents/`, no `integrations/sap/` |
+| 7.3 | Supplier Evaluation (FR-SEL) | NOT STARTED | no `scoring/` |
+| 7.4 | Action (FR-ACT) | NOT STARTED | no `tools/` |
+| 7.5 | Integrity Guard (FR-INT) | NOT STARTED | the BUYER03 / 100107 pattern is in the data, no detection code |
+| 7.6 | Evaluation and Learning (FR-EVA) | NOT STARTED | no `eval/`; classical baselines exist only inside `data_gen/validate.py` |
+| 8 | Tool contracts (14 tools) | NOT STARTED | 0 of 14 implemented |
+| 9 | Policies (POL-1 to POL-4) | NOT STARTED | no `policy/`; panel field `LFA1.ZZPANEL` is ready for POL-2 |
+| 10 | Responsible AI (masking, grounding, audit trail) | NOT STARTED | depends on Gen AI Hub and the decision log |
+| 11 | NFR-1 to NFR-6 | NOT STARTED | NFR-4 gap: `.env` is not in `.gitignore` yet |
+| 12 | Demo script, backup video, deck | NOT STARTED | |
+| 13 | Repository layout | IN PROGRESS | present: `data_gen/`, `docs/`, `tests/`. Missing: `adapters/`, `tools/`, `scoring/`, `integrations/sap/`, `agents/`, `policy/`, `eval/`, `ui/`, `infra/`, `scripts/` |
+| 17 | Open decisions | IN PROGRESS | open: Bedrock model (due 9 Oct), approval threshold, dataset size, cooking oil |
+
+Not tracked in the repository (ask the team before assuming): AWS accounts and budget alert, BAIP / AI Core access, Bedrock model access in us-west-2, role split.
 
 ---
 
@@ -269,12 +305,14 @@ gesit/
 
 | Dates | Deliverable | Status |
 |---|---|---|
-| by 5 Oct | Accounts, budget alert, BAIP request, role split | in progress |
-| by 6 Oct | Synthetic data generator | done; dataset generated on real PIHPS prices on 6 Oct (market type id to confirm, see section 17) |
-| 5-11 Oct | Core loop in terminal: disruption, scoring, explanation, draft PO (RPT stubbed) | |
-| 12-18 Oct | SAP-RPT on AI Core, Gen AI Hub, deploy to AgentCore, Gateway, Policy | |
-| 19-25 Oct | Integrity Guard, Monte Carlo eval, reliability update, Streamlit UI. **Freeze 25 Oct** | |
-| 26-31 Oct | Reset script, 10x runs, backup video, deck, 3 timed rehearsals in English | |
+| by 5 Oct | Accounts, budget alert, BAIP request, role split | IN PROGRESS (not tracked in the repository, confirm with the team) |
+| by 6 Oct | Synthetic data generator | DONE; dataset regenerated on real PIHPS prices on 8 Oct, market type confirmed |
+| 5-11 Oct | Core loop in terminal: disruption, scoring, explanation, draft PO (RPT stubbed) | NOT STARTED, **YOU ARE HERE** (see section 0) |
+| 12-18 Oct | SAP-RPT on AI Core, Gen AI Hub, deploy to AgentCore, Gateway, Policy | NOT STARTED |
+| 19-25 Oct | Integrity Guard, Monte Carlo eval, reliability update, Streamlit UI. **Freeze 25 Oct** | NOT STARTED |
+| 26-31 Oct | Reset script, 10x runs, backup video, deck, 3 timed rehearsals in English | NOT STARTED |
+
+Keep exactly one **YOU ARE HERE** marker in this table, and move it together with the progress flag in section 0.
 
 Mentoring questions: Smartsheet on Mondays 12, 19, 26 Oct before 16:00 WIB.
 
@@ -316,3 +354,4 @@ Decided on 8 Oct 2026 (team to object by 9 Oct, otherwise these stand):
 - 2026-10-08: Moved the generator, PIHPS input and output from the repo root into `data_gen/` (section 13). Regenerated output is byte-identical to the committed dataset. The PIHPS CSV and raw JSON stay committed so teammates can regenerate without downloading. Closed the repository layout decision. No requirement changed.
 - 2026-10-08: Dataset regenerated. S2 scripted to +6% (was +2.7%, under the FR-DET-2 trigger); supplier 100108 drift strengthened (late rate 11% before March 2026, 33% after, simulated); `LFA1.ZZPANEL` and off-panel supplier 100111 added for POL-2; PIHPS `price_type_id=3` confirmed as Pedagang Besar. Section 6 table and Dataset status updated, four open decisions closed, dataset size added as an open decision. No FR, POL or NFR changed.
 - 2026-10-08: Added `docs/data_dictionary.md` (per-file and per-column description of every CSV) and linked it from section 6. No requirement changed.
+- 2026-10-08: Added section 0 "Progress flag" (per-section status, next steps, YOU ARE HERE marker) and status values in the section 14 milestone table, so a new session can see where the project stands. No requirement changed.
