@@ -25,8 +25,11 @@ python fetch_pihps.py --probe --start 2026-09-21 --end 2026-09-25
 # compare the printed numbers with the website, note which id is Pedagang Besar
 python fetch_pihps.py --start 2024-09-01 --end 2026-09-30 --price-type <that id>
 ```
-The probe matters: from my side three different ids returned identical numbers,
-so confirm the id before trusting a scripted download.
+Confirmed on 8 Oct 2026: the site's own reference list
+(`/hargapangan/WebSite/TabelHarga/GetRefPriceType`) returns 1 = Pasar Tradisional,
+2 = Pasar Modern, 3 = Pedagang Besar, 4 = Produsen, and the probe returns four
+different price levels. The committed dataset uses id 3. Run the probe again if
+the numbers ever look identical across ids.
 
 Check what was loaded:
 ```bash
@@ -49,11 +52,11 @@ Same seed + same PIHPS files = identical output.
 
 | File | Who sees it | Content |
 |---|---|---|
-| `LFA1, MAKT, EKKO, EKPO, EKET, EKBE.csv` | agent | supplier master, material, PO header/item/schedule line, goods receipts (S/4 field names) |
+| `LFA1, MAKT, EKKO, EKPO, EKET, EKBE.csv` | agent | supplier master (custom field `ZZPANEL`: `X` = approved panel), material, PO header/item/schedule line, goods receipts (S/4 field names) |
 | `market_price_daily.csv` | agent | the PIHPS series actually used (public data) |
 | `quotes_asof.csv` | agent | today's quote, lead time and spare capacity from each active supplier |
 | `inventory_asof.csv` | agent | stock, daily usage, safety stock, days of cover, downtime cost |
-| `scenarios.json` | demo script | S1 delay notice, S2 price increase (size taken from the largest 30-day rise in PIHPS), S3 capacity shortfall |
+| `scenarios.json` | demo script | S1 delay notice, S2 price increase (scripted, `S2_PRICE_INCREASE_PCT` in `config.py`), S3 capacity shortfall |
 | `rpt_po_lines.csv` | SAP-RPT / baselines | one row per PO line, features known at order time, label `LATE` / `DELAY_DAYS`, `SPLIT` = train / test / holdout_recent / predict |
 | `_truth/*` | **never the agent** | hidden supplier parameters, buyer bias, realised outcome of open POs |
 

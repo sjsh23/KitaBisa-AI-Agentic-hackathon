@@ -10,6 +10,7 @@ are visible, and (4) the delay label is learnable but not trivial
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import numpy as np
@@ -27,6 +28,9 @@ def main():
     mp = pd.read_csv(o / "market_price_daily.csv", parse_dates=["DATE"])
     rpt = pd.read_csv(o / "rpt_po_lines.csv", dtype={"EBELN": str, "LIFNR": str})
     truth = pd.read_csv(o / "_truth" / "suppliers_truth.csv", dtype={"lifnr": str})
+    lfa1 = pd.read_csv(o / "LFA1.csv", dtype=str, keep_default_na=False)
+    quotes = pd.read_csv(o / "quotes_asof.csv", dtype={"LIFNR": str})
+    scenarios = json.loads((o / "scenarios.json").read_text(encoding="utf-8"))
 
     po = ekko.merge(ekpo, on="EBELN").merge(eket[["EBELN", "EINDT"]], on="EBELN")
     po = po.merge(ekbe[["EBELN", "BUDAT"]], on="EBELN", how="left")
@@ -81,7 +85,22 @@ def main():
     drift = rp[rp.LIFNR == "100108"].copy()
     drift["half"] = np.where(pd.to_datetime(drift.BEDAT) >= "2026-03-01", "since Mar 2026", "before")
     add("- 100108 late rate (drifting supplier): "
-        + ", ".join(f"{k} {v:.0%}" for k, v in drift.groupby("half").LATE.mean().items()))
+        + ", ".join(f"{k} {r['mean']:.0%} (n={int(r['size'])})"
+                    for k, r in drift.groupby("half").LATE.agg(["mean", "size"]).iterrows()))
+    add("")
+
+    # 3b. demo preconditions (FR-DET-2, POL-2)
+    add("## 3b. Demo preconditions")
+    s2 = next(s for s in scenarios if s["id"] == "S2")
+    s2_pct = s2["new_netpr"] / s2["old_netpr"] - 1
+    add(f"- S2 price revision: {s2['old_netpr']:,.0f} to {s2['new_netpr']:,.0f} "
+        f"(+{s2_pct:.1%}), FR-DET-2 trigger >3%: **{'OK' if s2_pct > 0.03 else 'FAIL'}**")
+    off = lfa1[lfa1.ZZPANEL != "X"].LIFNR.tolist()
+    off_pos = int(po.LIFNR.isin(off).sum())
+    off_quotes = int(quotes.LIFNR.isin(off).sum())
+    ok = len(off) >= 1 and off_pos == 0 and off_quotes >= 1
+    add(f"- Off-panel suppliers (LFA1.ZZPANEL blank): {', '.join(off) or 'none'}; "
+        f"POs in history {off_pos}, quotes {off_quotes}, POL-2 demo: **{'OK' if ok else 'FAIL'}**")
     add("")
 
     # 4. learnability

@@ -111,13 +111,13 @@ Built by the generator in `data_gen/` (see `data_gen/README.md`). Prices are anc
 
 | Table / file | Content |
 |---|---|
-| LFA1 | 10 fictional suppliers (LIFNR 100101..100110) |
+| LFA1 | 10 fictional approved-panel suppliers (LIFNR 100101..100110) plus one off-panel supplier (100111, quote only, no PO history). Custom field ZZPANEL: `X` = on the approved panel |
 | MAKT | Material RM-GULA-001, Gula Pasir Lokal (GKP) |
 | EKKO / EKPO / EKET / EKBE | PO header (BEDAT, ERNAM, LIFNR), item (MENGE, NETPR), promised date (EINDT), goods receipts (BUDAT) |
 | market_price_daily | PIHPS anchor used (public data, the agent may use it) |
 | quotes_asof | Current quote, lead time, spare capacity per supplier |
 | inventory_asof | Stock, daily usage (3,300 kg), safety stock, days of cover, downtime cost |
-| scenarios.json | S1 delay notice, S2 price increase, S3 capacity shortfall |
+| scenarios.json | S1 delay notice, S2 price increase (scripted +6%, `S2_PRICE_INCREASE_PCT`), S3 capacity shortfall |
 | rpt_po_lines | Features known at order time + label LATE / DELAY_DAYS, SPLIT train/test/holdout_recent/predict |
 | `_truth/` | Hidden supplier parameters, buyer bias, outcomes of open POs |
 
@@ -127,16 +127,17 @@ Hard rules:
 - **D-3** Every number in the deck that comes from simulated data is labelled "simulated". RPT accuracy is reported as "on simulated data vs a classical baseline", never as real-world accuracy.
 - **D-4** Assumptions (supplier parameters, downtime cost Rp150 juta/day, GKP not GKR, Idul Fitri dates) live in `data_gen/config.py` and on one assumptions slide.
 
-### Dataset status (generated 6 Oct 2026)
+### Dataset status (regenerated 8 Oct 2026)
 
 - **Price anchor (real):** downloaded with `fetch_pihps.py` from the PIHPS website endpoint, 2 Sep 2024 to 30 Sep 2026, 543 daily observations of "Gula Pasir Lokal", Rp16,250 to Rp17,600 per kg. Stored in `data_gen/data/pihps/pihps_long.csv` plus the raw monthly JSON in `data_gen/data/pihps/raw/`.
-- **Market type:** `price_type_id=3` was used. It is inferred to be Pedagang Besar because its prices sit between the retail series (ids 1, 2) and the producer series (id 4). Not yet confirmed against the website table (see section 17).
-- **Simulated output:** 434 PO lines (429 closed, 5 open), 10 suppliers, 4 buyers, seed 42, history 2024-10-01 to AS_OF 2026-09-30. `rpt_po_lines` split: 340 train, 74 test, 15 holdout_recent, 5 predict. Two runs with the same seed and PIHPS file gave byte-identical files.
-- **Validation (simulated data, `validation_report.md`):** monthly PO price vs anchor correlation 0.956; BUYER03 sends 24% of its POs to 100107 vs 3 to 5% for the other buyers; rainy season late rate 30% vs 19% otherwise; logistic regression AUC 0.694, gradient boosting AUC 0.603.
-- **Known gaps against this PRD** (each is an open decision in section 17):
-  - S2 price increase came out at +2.7% (Rp18,000 to Rp18,500), below the 3% trigger in FR-DET-2.
-  - Supplier 100108 drift is weak in the observed data: late rate 11% before March 2026, 15% after.
-  - Lebaran effect is not visible (17% late inside the window, n=18, vs 24% outside); supplier 100109 has only 5 POs.
+- **Market type:** `price_type_id=3` was used. Confirmed as Pedagang Besar on 8 Oct 2026: the PIHPS website's reference list (`GetRefPriceType`) returns 1 = Pasar Tradisional, 2 = Pasar Modern, 3 = Pedagang Besar, 4 = Produsen, and a probe for 21 to 25 Sep 2026 returns Rp17,500 to Rp17,550 for Gula Pasir Lokal under id 3, matching the stored CSV.
+- **Final parameters (8 Oct):** seed 42; S2 increase scripted at +6% (`S2_PRICE_INCREASE_PCT = 0.06`); supplier 100108 on-time probability drifts from 0.93 to 0.55 between 1 Mar and 1 May 2026, then stays there; off-panel supplier 100111 added (premium -5%, lead time 2 days).
+- **Simulated output:** 434 PO lines (429 closed, 5 open), 10 panel suppliers with history plus 1 off-panel supplier with a quote only, 4 buyers, seed 42, history 2024-10-01 to AS_OF 2026-09-30. `rpt_po_lines` split: 340 train, 74 test, 15 holdout_recent, 5 predict. Two runs with the same seed and PIHPS file gave byte-identical files.
+- **Validation (simulated data, `validation_report.md`):** monthly PO price vs anchor correlation 0.949; BUYER03 sends 24% of its POs to 100107 vs 2 to 4% for the other buyers; rainy season late rate 30% vs 24% otherwise; supplier 100108 late rate 11% before March 2026 (n=36), 33% after (n=15); S2 revision Rp17,650 to Rp18,700 (+5.9% after rounding to Rp50); logistic regression AUC 0.669, gradient boosting AUC 0.715 (74 test rows, so both are noisy).
+- **Known gaps against this PRD:**
+  - Supplier 100108 after the drift: 33% late observed on only 15 POs (hidden mean about 41%). Enough for the reliability chart, but the sample is small.
+  - Lebaran effect is not visible (17% late inside the window, n=18, vs 27% outside); supplier 100109 has only 4 closed POs. Do not claim the system recognises Lebaran.
+  - The dataset is small (74 test rows, 15 holdout rows). Growing it is an open decision in section 17.
 - **Location:** the generator, its PIHPS input and its output live in `data_gen/` (`data_gen/data/pihps/`, `data_gen/out/`), as section 13 proposes. Run the scripts from inside `data_gen/`.
 - **Running it on Windows:** `python` is not on PATH on the dev machine; use `cd data_gen`, then `py -3.11 generate.py` and `py -3.11 validate.py`.
 
@@ -301,12 +302,16 @@ Mentoring questions: Smartsheet on Mondays 12, 19, 26 Oct before 16:00 WIB.
 - Bedrock model for the agent loop (decide by 9 Oct, then freeze).
 - Approval threshold: Rp150 juta proposed (section 7.4), confirm with team.
 - Whether cooking oil is added as a second material (only after freeze criteria are met; data_gen supports it).
-- Approved-panel field: add a custom field (e.g. LFA1-ZZPANEL) and one off-panel quote to data_gen to demo POL-2.
-- S2 trigger: the generated price increase is +2.7%, under the 3% rule in FR-DET-2. Either script S2 to a fixed increase above 3% or lower the threshold.
-- Supplier 100108 drift: too weak in the generated data for the reliability chart (demo step 3e). Decide whether to strengthen the drift in `config.py`.
-- PIHPS market type: confirm on the website that `price_type_id=3` is Pedagang Besar (Gula Pasir Lokal should read Rp17,500 to Rp17,550 for 21 to 25 Sep 2026).
+- Dataset size: grow from 434 to about 800 to 1,000 PO lines so the RPT test set is less noisy. With one material this means either doubling daily usage (3,300 kg) or halving the routine PO size (3 to 8 t), which also moves the threshold note in section 7.4; the alternative is enabling cooking oil. Needs a team decision before the dataset is frozen.
+
+Decided on 8 Oct 2026 (team to object by 9 Oct, otherwise these stand):
+- S2 trigger: S2 is scripted to a fixed +6% (`S2_PRICE_INCREASE_PCT` in `data_gen/config.py`). FR-DET-2 keeps its 3% threshold.
+- Supplier 100108 drift: strengthened in `config.py` (see Dataset status).
+- Approved-panel field: `LFA1.ZZPANEL` added (`X` = on panel), with off-panel supplier 100111 present in `quotes_asof` only.
+- PIHPS market type: `price_type_id=3` confirmed as Pedagang Besar.
 
 ## Changelog
 - 2026-10-06: First version, from proposal, feedback plan and briefing; data generator done.
 - 2026-10-06: Dataset generated on a real PIHPS download (section 6, Dataset status). Fixed unmatched-glob crash in `pihps_loader.load_pihps`. Added four open decisions (S2 trigger, 100108 drift, PIHPS market type, repository layout). No requirement changed.
 - 2026-10-08: Moved the generator, PIHPS input and output from the repo root into `data_gen/` (section 13). Regenerated output is byte-identical to the committed dataset. The PIHPS CSV and raw JSON stay committed so teammates can regenerate without downloading. Closed the repository layout decision. No requirement changed.
+- 2026-10-08: Dataset regenerated. S2 scripted to +6% (was +2.7%, under the FR-DET-2 trigger); supplier 100108 drift strengthened (late rate 11% before March 2026, 33% after, simulated); `LFA1.ZZPANEL` and off-panel supplier 100111 added for POL-2; PIHPS `price_type_id=3` confirmed as Pedagang Besar. Section 6 table and Dataset status updated, four open decisions closed, dataset size added as an open decision. No FR, POL or NFR changed.

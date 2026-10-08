@@ -19,7 +19,7 @@ AS_OF = "2026-09-30"
 # Files exported from PIHPS (Excel from the website, or output of fetch_pihps.py).
 # Globs are allowed. Use the "Pedagang Besar" (wholesale) market type.
 PIHPS_FILES = ["data/pihps/*.xlsx", "data/pihps/pihps_long.csv"]
-PIHPS_MARKET = "Pedagang Besar"  # documentation only; set when downloading
+PIHPS_MARKET = "Pedagang Besar"  # price_type_id=3; documentation only, set when downloading
 # Wholesale price is used as-is. If you only have retail (Pasar Tradisional)
 # data, set this to about 0.93 to approximate a bulk B2B price, and say so.
 PRICE_SCALE = 1.0
@@ -77,6 +77,7 @@ class Supplier:
     short_ship_p: float = 0.03      # chance of delivering less than ordered
     active_from: str | None = None  # new supplier: no history before this date
     drift: dict | None = None       # {"start": date, "end": date, "on_time_p": target}
+    on_panel: bool = True           # approved panel (LFA1-ZZPANEL); off-panel = quote only, no history
     materials: tuple = ("RM-GULA-001", "RM-MGOR-001")
 
 
@@ -111,10 +112,10 @@ SUPPLIERS = [
              premium=0.035, price_sigma=0.012, lead_days=4, on_time_p=0.78,
              mean_delay_days=3.0, capacity_kg_month=35_000),
     Supplier("100108", "PT Agro Niaga Utama", "Cirebon", "Jawa Barat",
-             "Was reliable, getting worse over the last 6 months",
+             "Was reliable, dropped sharply in Mar to Apr 2026 and stayed poor",
              premium=0.005, price_sigma=0.010, lead_days=4, on_time_p=0.93,
              mean_delay_days=3.0, capacity_kg_month=45_000,
-             drift={"start": "2026-03-01", "end": "2026-09-30", "on_time_p": 0.68}),
+             drift={"start": "2026-03-01", "end": "2026-05-01", "on_time_p": 0.55}),
     Supplier("100109", "PT Sumber Rasa Baru", "Karawang", "Jawa Barat",
              "New supplier, little history (cold start)",
              premium=0.0, price_sigma=0.010, lead_days=3, on_time_p=0.91,
@@ -123,6 +124,11 @@ SUPPLIERS = [
              "Low price, tiny capacity, frequent short shipments",
              premium=-0.025, price_sigma=0.015, lead_days=5, on_time_p=0.82,
              mean_delay_days=3.0, capacity_kg_month=12_000, short_ship_p=0.15),
+    # Not on the approved panel: has a tempting quote but no PO history (POL-2 demo).
+    Supplier("100111", "CV Harapan Manis Baru", "Bogor", "Jawa Barat",
+             "Off-panel trader with a cheap, fast quote, not vetted",
+             premium=-0.05, price_sigma=0.010, lead_days=2, on_time_p=0.75,
+             mean_delay_days=3.0, capacity_kg_month=25_000, on_panel=False),
 ]
 
 # Extra drop in on-time probability per 100% of over-booking in a rolling 30 days.
@@ -148,6 +154,11 @@ BUYERS = [
 PRICE_WEIGHT = 20.0
 LEAD_WEIGHT = 0.15
 CHOICE_TEMPERATURE = 1.0
+
+# ---------------------------------------------------------------- scenarios
+# S2: scripted price revision asked by the supplier on an open PO. Fixed size so
+# it clears the >3% trigger in FR-DET-2 (the largest 30-day PIHPS rise was only 2.7%).
+S2_PRICE_INCREASE_PCT = 0.06
 
 # ---------------------------------------------------------------- calendar
 # Rainy season months (BMKG: roughly Nov to Mar in Java and Sumatra).

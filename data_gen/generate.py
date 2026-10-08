@@ -48,7 +48,7 @@ def simulate_history(world: World) -> pd.DataFrame:
                 continue
             buyer = buyers[rng.integers(len(buyers))]
             elig = [l for l, s in world.suppliers.items()
-                    if world.is_active(l, d) and m.matnr in s.materials]
+                    if s.on_panel and world.is_active(l, d) and m.matnr in s.materials]
             market = world.market_price(m.matnr, d)
             quotes = {l: world.quote_price(l, m.matnr, d) for l in elig}
             util_score = np.array([
@@ -83,11 +83,6 @@ def add_scenarios(world: World, hist: pd.DataFrame) -> tuple[pd.DataFrame, list[
     """Three open POs with a scripted disruption each, for the live demo."""
     as_of = pd.Timestamp(C.AS_OF)
     m = next(iter(world.materials.values()))
-    anchor = world.anchor[m.matnr]
-    hist_anchor = anchor.loc[C.HISTORY_START:C.AS_OF]
-    chg30 = hist_anchor.pct_change(30)
-    shock_date = chg30.idxmax()
-    shock_pct = float(chg30.max())
 
     specs = [
         ("S1", "100101", 2, 10_000, "BUYER01"),
@@ -117,15 +112,16 @@ def add_scenarios(world: World, hist: pd.DataFrame) -> tuple[pd.DataFrame, list[
                            f"(rough seas on the Bakauheni crossing).",
             })
         elif sid == "S2":
-            new_price = round50(price * (1 + shock_pct))
+            # FR-DET-2: scripted size from config, reported after rounding to Rp50
+            new_price = round50(price * (1 + C.S2_PRICE_INCREASE_PCT))
+            pct = new_price / price - 1
             scen.append({
                 "id": sid, "type": "price_increase", "lifnr": lifnr, "matnr": m.matnr,
                 "notice_date": str(as_of.date()), "old_netpr": price, "new_netpr": new_price,
-                "increase_pct": round(shock_pct * 100, 1),
-                "anchor_note": f"Size of the increase = largest 30-day rise in the PIHPS "
-                               f"series in the history window, ending {shock_date.date()}.",
+                "increase_pct": round(pct * 100, 1),
+                "note": "Scripted increase (S2_PRICE_INCREASE_PCT in config.py), simulated.",
                 "message": f"{sup.name} asks to revise the price by "
-                           f"+{shock_pct:.1%} before confirming the PO.",
+                           f"+{pct:.1%} before confirming the PO.",
             })
         else:
             scen.append({
@@ -149,7 +145,9 @@ def build_tables(world: World, po: pd.DataFrame) -> dict[str, pd.DataFrame]:
 
     lfa1 = pd.DataFrame([{"LIFNR": s.lifnr, "NAME1": s.name, "ORT01": s.city,
                           "REGIO": s.province, "LAND1": "ID",
-                          "ERDAT": (s.active_from or "2020-01-01")} for s in C.SUPPLIERS])
+                          "ERDAT": (s.active_from or "2020-01-01"),
+                          # POL-2: custom field, X = on the approved panel
+                          "ZZPANEL": "X" if s.on_panel else ""} for s in C.SUPPLIERS])
     makt = pd.DataFrame([{"MATNR": m.matnr, "SPRAS": "EN", "MAKTX": m.maktx,
                           "MEINS": m.meins, "PIHPS_SERIES": m.pihps_series}
                          for m in mat.values()])

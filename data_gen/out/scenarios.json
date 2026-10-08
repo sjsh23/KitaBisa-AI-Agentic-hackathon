@@ -17,11 +17,11 @@
     "lifnr": "100103",
     "matnr": "RM-GULA-001",
     "notice_date": "2026-09-30",
-    "old_netpr": 18000.0,
-    "new_netpr": 18500.0,
-    "increase_pct": 2.7,
-    "anchor_note": "Size of the increase = largest 30-day rise in the PIHPS series in the history window, ending 2025-01-16.",
-    "message": "CV Tebu Makmur Sejahtera asks to revise the price by +2.7% before confirming the PO.",
+    "old_netpr": 17650.0,
+    "new_netpr": 18700.0,
+    "increase_pct": 5.9,
+    "note": "Scripted increase (S2_PRICE_INCREASE_PCT in config.py), simulated.",
+    "message": "CV Tebu Makmur Sejahtera asks to revise the price by +5.9% before confirming the PO.",
     "ebeln": "4500000432"
   },
   {

@@ -6,7 +6,7 @@ Run this on your own laptop (it needs normal internet access):
     #    Compare the printed sugar prices with the website for the same dates.
     python fetch_pihps.py --probe --start 2026-09-21 --end 2026-09-25
 
-    # 2) Download the history with the id you confirmed (3 is a guess, verify it!)
+    # 2) Download the history with the id you confirmed (3 = Pedagang Besar, per GetRefPriceType on 8 Oct 2026)
     python fetch_pihps.py --start 2024-09-01 --end 2026-09-30 --price-type 3
 
 Output: data/pihps/raw/*.json (one file per month, as served) and
