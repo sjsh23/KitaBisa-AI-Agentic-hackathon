@@ -319,6 +319,14 @@ the website (JSON), kept as evidence of the source.
 - `data_gen/out/scenarios.json`: the three demo disruptions (S1 delay notice,
   S2 price increase, S3 capacity shortfall), each with the affected `ebeln`,
   `lifnr` and the supplier's message. The agent may read it; it plays the role
-  of incoming supplier notices.
+  of incoming supplier notices. S3 also carries the split of the delivery, which
+  Disruption Detection uses for the stock-out gap (FR-DET-3):
+
+  | S3 field | Type | Meaning |
+  |---|---|---|
+  | remainder_kg | KG | Quantity that cannot be delivered on time: 7,200 (60% of `ordered_kg`). |
+  | original_eindt | date | Promised date of the PO (EINDT), when `deliverable_kg` arrives: 2026-10-01. |
+  | remainder_delay_days | days | Days from `original_eindt` to the remainder: 10 (assumption, `S3_REMAINDER_DELAY_DAYS` in `config.py`, rule D-4). |
+  | remainder_eindt | date | When `remainder_kg` arrives: `original_eindt` + `remainder_delay_days` = 2026-10-11. |
 - `data_gen/out/meta.json`: seed, date window, input files and row counts of the last run.
 - `data_gen/out/validation_report.md`: sanity checks on the generated data.

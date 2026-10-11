@@ -32,6 +32,10 @@
     "notice_date": "2026-09-30",
     "ordered_kg": 12000,
     "deliverable_kg": 4800.0,
+    "remainder_kg": 7200.0,
+    "original_eindt": "2026-10-01",
+    "remainder_delay_days": 10,
+    "remainder_eindt": "2026-10-11",
     "message": "PT Cepat Antar Pangan can only deliver 40% of the ordered quantity on time; the rest would follow 10 days later.",
     "ebeln": "4500000433"
   }

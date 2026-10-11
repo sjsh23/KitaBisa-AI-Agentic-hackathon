@@ -159,6 +159,10 @@ CHOICE_TEMPERATURE = 1.0
 # S2: scripted price revision asked by the supplier on an open PO. Fixed size so
 # it clears the >3% trigger in FR-DET-2 (the largest 30-day PIHPS rise was only 2.7%).
 S2_PRICE_INCREASE_PCT = 0.06
+# S3: the share that cannot be delivered on time arrives this many days after the
+# original promised date (EINDT). An assumption (D-4), same convention as S1
+# (new_eindt = EINDT + 7 days).
+S3_REMAINDER_DELAY_DAYS = 10
 
 # ---------------------------------------------------------------- calendar
 # Rainy season months (BMKG: roughly Nov to Mar in Java and Sumatra).

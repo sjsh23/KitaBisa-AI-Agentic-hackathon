@@ -6,7 +6,7 @@ Agentic AI Hackathon 2026, Track A: Intelligent Supply Chain (Sokrates with AWS,
 | | |
 |---|---|
 | Status | Building toward Final/Demo Day, **Saturday 31 October 2026** (in person, 15 min incl. Q&A, **English**) |
-| Last updated | 8 October 2026 |
+| Last updated | 9 October 2026 |
 | Feature freeze | 25 October 2026 |
 | Source documents | Accepted proposal, finalist work plan (feedback), participant briefing deck |
 
@@ -41,8 +41,8 @@ Figures used in the proposal (cite them as such in the deck): direct procurement
 
 | Persona | Needs | Main screen |
 |---|---|---|
-| Buyer (e.g. BUYER01) | See at-risk POs, get a recommended replacement, approve in one click or override with a reason | Buyer view |
-| Procurement manager | Approve POs above the threshold, see integrity flags | Manager view |
+| Buyer (e.g. BUYER01) | See at-risk POs, get a recommended replacement, approve in one click or override with a reason | Buyer conversation in Joule |
+| Procurement manager | Approve POs above the threshold, see integrity flags | Manager conversation in Joule |
 | Auditor | Trace why each decision was made | Audit trail (Observability traces + decision log) |
 | Judges | See Plan, Reason, Act/Tool, Review, Orchestration, Human-in-the-loop, Responsible AI | The 6-minute live demo |
 
@@ -52,7 +52,7 @@ Figures used in the proposal (cite them as such in the deck): direct procurement
 |---|---|---|
 | Innovation & Originality | 25% | Integrity Guard; predictive detection with SAP-RPT; risk-priced supplier choice proven against baselines |
 | Working Solution & Demo | 20% | Live end-to-end run on 3 scenarios, backup video ready |
-| Technical Execution & AWS/SAP | 20% | Strands on AgentCore Runtime, Gateway (MCP), Policy (Cedar), Memory, Observability; SAP-RPT on AI Core; Gen AI Hub with masking and grounding |
+| Technical Execution & AWS/SAP | 20% | Strands on AgentCore Runtime, Gateway (MCP), Policy (Cedar), Memory, Observability; SAP-RPT on AI Core; Gen AI Hub with masking and grounding; Joule as the user interface |
 | Problem-Solution Fit & Impact | 20% | Response time hours to minutes; cost vs baselines from Monte Carlo |
 | Presentation & Storytelling | 10% | One concrete story (sugar is late, line stops), one architecture diagram |
 | Q&A | 5% | Prepared answers (section 15) |
@@ -70,7 +70,7 @@ Figures used in the proposal (cite them as such in the deck): direct procurement
 ## 5. Architecture
 
 ```
-Streamlit UI (buyer / manager)
+Joule UI (buyer / manager), built in Joule Studio
         |
 AgentCore Runtime: Strands Supervisor (agents-as-tools / Graph, deterministic path)
    |-- Disruption Detection agent ----> predict_delay_risk --> SAP-RPT (AI Core)
@@ -91,19 +91,19 @@ AgentCore Memory (session state)   AgentCore Observability (traces)   Secrets Ma
 |---|---|---|
 | Dev | Kiro (AWS Docs + Strands MCP), Claude Code | Specs, code |
 | Orchestration | Strands Agents, supervisor | Plan and delegate |
-| Agent LLM | A Claude model on Amazon Bedrock with strong tool use (pick in week 1, then freeze) | Reasoning loop |
+| Agent LLM | Gemini Flash (Google) through the Strands Gemini model provider; model id in `GESIT_LLM_MODEL` | Agent reasoning |
 | Hosting | AgentCore Runtime | Run the agents |
 | Tools | AgentCore Gateway + Lambda (MCP) | Data access and actions |
 | Guardrails | AgentCore Policy (Cedar) | Threshold and panel rules |
 | State, audit | AgentCore Memory, AgentCore Observability, DynamoDB, S3 | Session state, traces, records |
 | Prediction | SAP-RPT-1.6 (sap-rpt-1-small) on SAP AI Core | P(late) per PO line |
 | Explanations | SAP Gen AI Hub orchestration (sap-ai-sdk-gen) | Masked, contract-grounded text for the buyer |
-| UI | Streamlit | Buyer and manager views |
+| UI | SAP Joule (Joule Studio, needs an SAP BAIP sub-account) | Buyer and manager views, as conversations in Joule |
 | Region | us-west-2 only | Avoid forgotten resources |
 
-Why two LLM paths: Bedrock runs the agent loop (native to Strands/AgentCore); Gen AI Hub writes the human-facing explanation that contains buyer and supplier names, so masking applies there.
+Why two LLM paths: Gemini Flash does the agents' reasoning (through Strands); Gen AI Hub writes the human-facing explanation that contains buyer and supplier names, so masking applies there. Agent reasoning text is masked in code before it reaches Gemini Flash: supplier names become their LIFNR and buyer names are not sent.
 
-Optional, only if time allows: Joule Studio front end (needs SAP BAIP sub-account); CAP OData mock via SAP Build Code.
+Optional, only if time allows: CAP OData mock via SAP Build Code.
 
 ## 6. Data
 
@@ -219,7 +219,7 @@ All return JSON; amounts in IDR, quantities in KG, dates ISO.
 Each policy has a test that shows one allow and one deny.
 
 ## 10. Responsible AI
-- Masking of buyer and supplier names in the Gen AI Hub step; names restored only in the UI.
+- Masking of buyer and supplier names in the Gen AI Hub step, and in code before any agent prompt goes to Gemini Flash; names restored only in the UI.
 - No autonomous release above the threshold; human decision is always recorded.
 - Every decision traceable: plan, tool calls, scores, explanation, approver (Observability trace + decision log).
 - Overrides are allowed but justified; Integrity Guard flags patterns, it does not punish.
@@ -229,7 +229,7 @@ Each policy has a test that shows one allow and one deny.
 - **NFR-1** End-to-end decision for one scenario in under 60 seconds (target 20 s).
 - **NFR-2** Reproducible: fixed seeds, LLM temperature at or below 0.2, `reset_demo` command restores the database to the scenario start state.
 - **NFR-3** Cost per decision measured (tokens and RPT calls) and shown in the deck.
-- **NFR-4** No secrets in code or git. SAP AI Core credentials in Secrets Manager or an AgentCore Identity credential provider; local dev uses `.env` (gitignored).
+- **NFR-4** No secrets in code or git. SAP AI Core credentials and the Gemini Flash API key in Secrets Manager or an AgentCore Identity credential provider; local dev uses `.env` (gitignored, template in `.env.example`).
 - **NFR-5** All UI text and generated explanations in English.
 - **NFR-6** Each demo scenario passes 10 consecutive runs before 26 October.
 
@@ -258,7 +258,7 @@ gesit/
   agents/          Strands supervisor and sub-agents, prompts
   policy/          Cedar policies and their tests
   eval/            Monte Carlo vs baselines, RPT vs classical baselines
-  ui/              Streamlit app
+  ui/              Joule front end (Joule Studio agent and skill definitions)
   infra/           AgentCore / Gateway / Lambda / DynamoDB setup scripts
   scripts/         reset_demo, load_data
   tests/
@@ -273,7 +273,7 @@ gesit/
 | by 6 Oct | Synthetic data generator | done; dataset generated on real PIHPS prices on 6 Oct (market type id to confirm, see section 17) |
 | 5-11 Oct | Core loop in terminal: disruption, scoring, explanation, draft PO (RPT stubbed) | |
 | 12-18 Oct | SAP-RPT on AI Core, Gen AI Hub, deploy to AgentCore, Gateway, Policy | |
-| 19-25 Oct | Integrity Guard, Monte Carlo eval, reliability update, Streamlit UI. **Freeze 25 Oct** | |
+| 19-25 Oct | Integrity Guard, Monte Carlo eval, reliability update, Joule UI. **Freeze 25 Oct** | |
 | 26-31 Oct | Reset script, 10x runs, backup video, deck, 3 timed rehearsals in English | |
 
 Mentoring questions: Smartsheet on Mondays 12, 19, 26 Oct before 16:00 WIB.
@@ -282,7 +282,7 @@ Mentoring questions: Smartsheet on Mondays 12, 19, 26 Oct before 16:00 WIB.
 
 | Risk | Mitigation |
 |---|---|
-| BAIP / AI Core extended plan not provisioned | RPT Playground public API for development; RPT behind an interface with Beta-posterior fallback (FR-DET-4) |
+| BAIP / AI Core extended plan not provisioned | RPT Playground public API for development; RPT behind an interface with Beta-posterior fallback (FR-DET-4). The Joule UI also depends on BAIP and has no agreed fallback yet (section 17) |
 | S/4 sandbox down (401) | Already out of scope; adapter pattern |
 | Live demo failure (network, AWS) | Backup video, reset script, local fallback mode |
 | LLM non-determinism | Deterministic scoring, low temperature, numbers only from tools |
@@ -299,10 +299,15 @@ Mentoring questions: Smartsheet on Mondays 12, 19, 26 Oct before 16:00 WIB.
 - What does a decision cost? (measured, NFR-3)
 
 ## 17. Open decisions
-- Bedrock model for the agent loop (decide by 9 Oct, then freeze).
+- Gemini access path in the deployed system: the Gemini API directly (the code reads `GEMINI_API_KEY`) or through a gateway. The model version is fixed at `gemini-3.5-flash` (`GESIT_LLM_MODEL`); change it only with a team decision, then freeze (NFR-2).
 - Approval threshold: Rp150 juta proposed (section 7.4), confirm with team.
 - Whether cooking oil is added as a second material (only after freeze criteria are met; data_gen supports it).
 - Dataset size: grow from 434 to about 800 to 1,000 PO lines so the RPT test set is less noisy. With one material this means either doubling daily usage (3,300 kg) or halving the routine PO size (3 to 8 t), which also moves the threshold note in section 7.4; the alternative is enabling cooking oil. Needs a team decision before the dataset is frozen.
+- Joule UI details (UI changed from Streamlit to Joule on 9 Oct 2026): how Joule calls the supervisor on AgentCore Runtime; how the ranked table, the reliability chart (FR-EVA-3) and the baseline results table (demo step 3e) are shown in Joule; and what the fallback UI is if the BAIP sub-account is not provisioned in time.
+
+Decided on 9 Oct 2026:
+- Agent reasoning model: Gemini Flash, fixed at `gemini-3.5-flash` (the alias `gemini-flash-latest` returned HTTP 503 on two of four test runs). It replaces gpt-5.4, chosen earlier the same day and dropped because the OpenAI models kept hitting rate limits; before that the plan was a Claude model on Amazon Bedrock. Delay prediction stays on SAP-RPT-1.6.
+- UI: SAP Joule (replaces Streamlit).
 
 Decided on 8 Oct 2026 (team to object by 9 Oct, otherwise these stand):
 - S2 trigger: S2 is scripted to a fixed +6% (`S2_PRICE_INCREASE_PCT` in `data_gen/config.py`). FR-DET-2 keeps its 3% threshold.
@@ -317,3 +322,7 @@ Decided on 8 Oct 2026 (team to object by 9 Oct, otherwise these stand):
 - 2026-10-08: Dataset regenerated. S2 scripted to +6% (was +2.7%, under the FR-DET-2 trigger); supplier 100108 drift strengthened (late rate 11% before March 2026, 33% after, simulated); `LFA1.ZZPANEL` and off-panel supplier 100111 added for POL-2; PIHPS `price_type_id=3` confirmed as Pedagang Besar. Section 6 table and Dataset status updated, four open decisions closed, dataset size added as an open decision. No FR, POL or NFR changed.
 - 2026-10-08: Added `docs/data_dictionary.md` (per-file and per-column description of every CSV) and linked it from section 6. No requirement changed.
 - 2026-10-08: Added `WORKING.md` (progress log, updated after every finished task) to the repository layout in section 13. No requirement changed.
+- 2026-10-09: UI changed from Streamlit to SAP Joule (built in Joule Studio, needs an SAP BAIP sub-account). Updated sections 3, 4, 5, 13, 14 and 15; Joule removed from the optional list; Joule UI details added as an open decision in section 17. No FR, POL or NFR changed.
+- 2026-10-09: Agent reasoning model set to gpt-5.4 through the Strands OpenAI provider (was a Claude model on Bedrock); delay prediction stays on SAP-RPT-1.6. Sections 5, 10, 11 (NFR-4 wording) and 17 updated. First agent built: Disruption Detection (FR-DET-1 to FR-DET-4). No FR or POL changed.
+- 2026-10-09: Agent reasoning model changed from gpt-5.4 to Gemini Flash through the Strands Gemini provider (OpenAI rate limits). Sections 5, 10, 11 (NFR-4 wording) and 17 updated; `OPENAI_API_KEY` replaced by `GEMINI_API_KEY`. No FR or POL changed.
+- 2026-10-11: S3 in `scenarios.json` now states the remainder explicitly (`remainder_kg`, `original_eindt`, `remainder_delay_days`, `remainder_eindt`; `S3_REMAINDER_DELAY_DAYS = 10` in `data_gen/config.py`, an assumption under D-4). Disruption Detection computes the S3 gap for the remainder (+5 days for 7,200 kg, simulated; FR-DET-3). No CSV changed. No requirement changed.

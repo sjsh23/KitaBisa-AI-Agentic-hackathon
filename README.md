@@ -41,7 +41,7 @@ flowchart TD
 
 The stack: Strands agents on Amazon Bedrock AgentCore (Runtime, Gateway,
 Policy, Memory, Observability), SAP-RPT on SAP AI Core for prediction, SAP Gen
-AI Hub for masked explanations, Streamlit for the UI. The architecture diagram
+AI Hub for masked explanations, SAP Joule for the UI. The architecture diagram
 is in [PRD.md, section 5](PRD.md#5-architecture).
 
 ## What to read, in order
@@ -70,7 +70,7 @@ Folders are added as they are built.
 | `tests/` | Tests and an offline fake PIHPS file maker |
 | `adapters/`, `scoring/`, `tools/`, `agents/` | S/4-shaped data access, expected-cost scoring, MCP tools, Strands supervisor and sub-agents |
 | `integrations/sap/`, `policy/`, `eval/` | SAP-RPT and Gen AI Hub clients, Cedar policies, Monte Carlo and model benchmarks |
-| `ui/`, `infra/`, `scripts/` | Streamlit app, AWS setup, demo reset and data load |
+| `ui/`, `infra/`, `scripts/` | Joule front end, AWS setup, demo reset and data load |
 
 One rule worth knowing before reading the code: `data_gen/out/_truth/` holds
 the hidden parameters of the simulated world. Only `eval/` may read it; agents,

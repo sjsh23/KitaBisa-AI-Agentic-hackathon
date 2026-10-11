@@ -128,8 +128,14 @@ def add_scenarios(world: World, hist: pd.DataFrame) -> tuple[pd.DataFrame, list[
                 "id": sid, "type": "capacity_shortfall", "lifnr": lifnr, "matnr": m.matnr,
                 "notice_date": str(as_of.date()), "ordered_kg": qty,
                 "deliverable_kg": qty * 0.4,
+                # FR-DET-3: explicit date for the remainder (S3_REMAINDER_DELAY_DAYS, D-4)
+                "remainder_kg": qty * 0.6,
+                "original_eindt": str(eindt.date()),
+                "remainder_delay_days": C.S3_REMAINDER_DELAY_DAYS,
+                "remainder_eindt": str((eindt + C.S3_REMAINDER_DELAY_DAYS * DAY).date()),
                 "message": f"{sup.name} can only deliver 40% of the ordered quantity "
-                           f"on time; the rest would follow 10 days later.",
+                           f"on time; the rest would follow {C.S3_REMAINDER_DELAY_DAYS} "
+                           f"days later.",
             })
     return pd.concat([hist, pd.DataFrame(rows)], ignore_index=True), scen
 

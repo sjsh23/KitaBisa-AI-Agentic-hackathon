@@ -35,6 +35,7 @@ Current progress (what is done, what is next) is tracked in the working log, imp
 - AWS region is always `us-west-2`.
 - Demo determinism: fixed seeds, LLM temperature at or below 0.2, and `scripts/reset_demo` must restore the scenario start state.
 - Agent orchestration: Strands supervisor with agents-as-tools or Graph. Do not use Swarm.
+- Models: SAP-RPT-1.6 for delay prediction, Gemini Flash (Strands Gemini provider) for agent reasoning.
 
 ## Commands
 
@@ -43,7 +44,10 @@ Current progress (what is done, what is next) is tracked in the working log, imp
 cd data_gen && python generate.py && python validate.py
 # tests
 pytest -q
+# Disruption Detection in the terminal: S1, S2, S3, scan or all (add --no-llm or --json)
+python -m agents.run S1
 ```
+Credentials for SAP-RPT-1.6 and Gemini Flash go in `.env` (see `.env.example`).
 Add new commands here when you create them (reset, deploy, UI).
 
 ## Writing style for docs, UI text and the deck

@@ -74,7 +74,9 @@ Fitri dates (check against the official calendar), rainy-season months.
 Assumed (all in `config.py`, state them on the assumptions slide): supplier
 premiums and reliability, delay distribution, capacity, how buyers chose
 suppliers before GESIT, the BUYER03 to supplier 100107 bias, stock level and
-the Rp150 juta/day downtime cost. Supplier and buyer names are fictional.
+the Rp150 juta/day downtime cost. The scenario timings are assumed too: the S1
+delay is 7 days, and the S3 remainder arrives 10 days after the original
+promised date (`S3_REMAINDER_DELAY_DAYS`). Supplier and buyer names are fictional.
 
 Wholesale PIHPS is a market price, not a factory contract price. Large
 factories buy refined sugar (GKR); this dataset models a mid-size producer
