@@ -15,12 +15,13 @@ Current progress (what is done, what is next) is tracked in the working log, imp
 - Before starting a task, read `WORKING.md` to see where the project stands.
 - After finishing a task, update `WORKING.md` in the same change: done log, status table,
   current position, next up and the "Last updated" date.
-- Before starting a task, find the requirement IDs it touches (FR-*, POL-*, NFR-*, D-*)
+- Before starting a task, find the requirement IDs it touches (FR-_, POL-_, NFR-_, D-_)
   and mention them in the plan, code comments and commit message.
 - If a task conflicts with PRD.md or needs a new requirement, stop and ask.
   When the team agrees, update PRD.md and its Changelog in the same change.
 - Stay inside the repository layout in PRD section 13. Do not add top-level folders without asking.
 - Feature freeze is 25 Oct 2026. After that, only bug fixes and demo hardening.
+- no pushing to repository, only commits with message is approved
 
 ## Code rules
 
@@ -47,6 +48,7 @@ pytest -q
 # Disruption Detection in the terminal: S1, S2, S3, scan or all (add --no-llm or --json)
 python -m agents.run S1
 ```
+
 Credentials for SAP-RPT-1.6 and Gemini Flash go in `.env` (see `.env.example`).
 Add new commands here when you create them (reset, deploy, UI).
 
