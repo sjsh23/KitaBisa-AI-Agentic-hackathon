@@ -21,7 +21,7 @@ Current progress (what is done, what is next) is tracked in the working log, imp
   When the team agrees, update PRD.md and its Changelog in the same change.
 - Stay inside the repository layout in PRD section 13. Do not add top-level folders without asking.
 - Feature freeze is 25 Oct 2026. After that, only bug fixes and demo hardening.
-- no pushing to repository, only commits with message is approved
+- for CLAUDE and CLAUDE CODE, NO pushing to repository, only commits with message is approved
 
 ## Code rules
 
@@ -45,7 +45,8 @@ Current progress (what is done, what is next) is tracked in the working log, imp
 cd data_gen && python generate.py && python validate.py
 # tests
 pytest -q
-# Disruption Detection in the terminal: S1, S2, S3, scan or all (add --no-llm or --json)
+# Disruption Detection, then Supplier Evaluation, in the terminal: S1, S2, S3, scan or all
+# (add --no-llm, --json, or --detect-only for Detection alone)
 python -m agents.run S1
 ```
 

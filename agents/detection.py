@@ -11,25 +11,25 @@ Two steps, in a fixed order (FR-SUP-3, deterministic path):
    names are masked to their LIFNR before the text leaves the system (PRD
    section 10); buyer names are not sent.
 
+The text is tidied in code (`agents.grounding.tidy_text`: spacing and spelling,
+never a number) and the fixes are kept in `REASONING_FIXES`.
+
 If the reasoning model is unavailable the report is still returned, with
 `REASONING` empty and `REASONING_ERROR` set.
 """
 from __future__ import annotations
 
 import json
-import time
 from typing import Any, Callable
 
 from adapters import CsvAdapter, default_adapter
-from agents import llm
+from agents import grounding, llm
 from integrations.sap.rpt_client import RptClient
 from scoring import disruption
 from tools import get_inventory, get_open_pos, predict_delay_risk
 
 AGENT_NAME = "disruption_detection"
 MAX_REASONING_WORDS = 120
-LLM_ATTEMPTS = 3                # tries for a transient model error
-LLM_RETRY_WAIT_SECONDS = 2.0    # wait before try n+1 is n times this
 
 SYSTEM_PROMPT = f"""You are the Disruption Detection agent of GESIT, a procurement assistant \
 for a food and beverage manufacturer. You receive a JSON detection report about open purchase \
@@ -50,6 +50,8 @@ Rules:
 - Use only numbers that appear in the JSON. Do not calculate, estimate or round new numbers.
 - Refer to suppliers by their LIFNR and to orders by their EBELN.
 - Do not recommend a replacement supplier; that is the next agent's job.
+- Always put a space between a word and a number ("against 0.23", "supplier 100108").
+- Spell every word correctly and keep a space after every punctuation mark.
 - Do not use em dashes or en dashes."""
 
 Reasoner = Callable[[dict[str, Any]], "str | tuple[str, str]"]
@@ -118,14 +120,17 @@ class DetectionAgent:
     def reason(self, report: dict[str, Any]) -> dict[str, Any]:
         """Add the Gemini Flash assessment to a report. Never raises."""
         out = {**report, "REASONING": None, "REASONING_MODEL": llm.model_id(),
-               "REASONING_ERROR": None}
+               "REASONING_ERROR": None, "REASONING_FIXES": []}
         try:
-            answer = self.reasoner(facts_for_llm(report, self.adapter))
+            facts = facts_for_llm(report, self.adapter)
+            answer = self.reasoner(facts)
             if isinstance(answer, tuple):   # (text, model that wrote it), may be the fallback
                 answer, out["REASONING_MODEL"] = answer
-            out["REASONING"] = answer.strip()
+            # Spacing and spelling fixed in code (NFR-5); numbers are never changed.
+            out["REASONING"], out["REASONING_FIXES"] = grounding.tidy_text(
+                answer, SYSTEM_PROMPT, facts)
         except Exception as exc:   # the report must survive any model failure
-            out["REASONING_ERROR"] = f"reasoning model unavailable: {_error_detail(exc)}"
+            out["REASONING_ERROR"] = f"reasoning model unavailable: {llm.error_detail(exc)}"
         return out
 
     def run(self, matnr: str, notices: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -161,55 +166,5 @@ def facts_for_llm(report: dict[str, Any], adapter: CsvAdapter) -> dict[str, Any]
 
 
 def llm_reasoner(facts: dict[str, Any]) -> tuple[str, str]:
-    """Ask Gemini Flash for the assessment; returns the text and the model that wrote it.
-
-    When the model runs out of output tokens the next entry of `llm.model_plan()` is tried:
-    the same model with a larger budget, then the optional fallback model.
-    """
-    prompt = "Detection report (JSON):\n" + json.dumps(facts, indent=2)
-    plan = llm.model_plan()
-    for step, (model_id, max_output_tokens) in enumerate(plan, 1):
-        model = llm.build_model(model=model_id, max_output_tokens=max_output_tokens)
-        try:
-            return _ask(model, prompt), model_id
-        except Exception as exc:
-            if step == len(plan) or not _is_out_of_tokens(exc):
-                raise
-    raise AssertionError("unreachable")
-
-
-def _ask(model: Any, prompt: str) -> str:
-    """One assessment from a Strands agent without tools, retrying transient errors."""
-    from strands import Agent
-
-    for attempt in range(1, LLM_ATTEMPTS + 1):
-        agent = Agent(model=model, system_prompt=SYSTEM_PROMPT, tools=[], callback_handler=None)
-        try:
-            return str(agent(prompt))
-        except Exception as exc:
-            if attempt == LLM_ATTEMPTS or not _is_transient(exc):
-                raise
-            time.sleep(LLM_RETRY_WAIT_SECONDS * attempt)
-    raise AssertionError("unreachable")
-
-
-def _is_transient(exc: Exception) -> bool:
-    """Overload (HTTP 5xx) and rate-limit errors are worth one more try."""
-    return type(exc).__name__ in ("ServerError", "ModelThrottledException")
-
-
-def _is_out_of_tokens(exc: Exception) -> bool:
-    """The answer was cut off at the output token budget (Gemini finish reason MAX_TOKENS)."""
-    return type(exc).__name__ == "MaxTokensReachedException"
-
-
-def _error_detail(exc: Exception) -> str:
-    """Short, key-free description of a model failure, with the HTTP code when there is one."""
-    if isinstance(exc, llm.LlmUnavailable):
-        return str(exc)
-    parts = [type(exc).__name__]
-    for attribute in ("code", "status"):
-        value = getattr(exc, attribute, None)
-        if isinstance(value, (int, str)) and value != "":
-            parts.append(str(value))
-    return " ".join(parts)
+    """Ask Gemini Flash for the assessment; returns the text and the model that wrote it."""
+    return llm.complete(SYSTEM_PROMPT, "Detection report (JSON):\n" + json.dumps(facts, indent=2))

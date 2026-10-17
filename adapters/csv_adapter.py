@@ -25,7 +25,7 @@ _INT_FIELDS = {
 _FLOAT_FIELDS = {
     "MENGE", "WEMNG", "LABST", "DAILY_USAGE_KG", "EISBE", "DAYS_OF_COVER", "OPEN_PO_QTY",
     "PRICE_VS_MARKET", "SUPPLIER_UTIL_30D", "SUP_LATE_RATE_90D", "SUP_AVG_DELAY_90D",
-    "AVAILABLE_KG_NEXT_30D",
+    "AVAILABLE_KG_NEXT_30D", "PRICE_IDR_KG",
 }
 
 
@@ -112,6 +112,16 @@ class CsvAdapter:
     def inventory(self, matnr: str) -> dict[str, Any] | None:
         """Stock position row for a material, or None."""
         return next((r for r in self.table("inventory_asof") if r["MATNR"] == matnr), None)
+
+    def quotes(self, matnr: str) -> list[dict[str, Any]]:
+        """Current supplier quotes for a material (quotes_asof), every supplier incl. off-panel."""
+        return [r for r in self.table("quotes_asof") if r["MATNR"] == matnr]
+
+    def market_price(self, matnr: str, day: str) -> dict[str, Any] | None:
+        """PIHPS anchor row for a material on `day`, or the last one before it; None if none."""
+        rows = [r for r in self.table("market_price_daily")
+                if r["MATNR"] == matnr and r["DATE"] <= day]
+        return max(rows, key=lambda r: r["DATE"], default=None)
 
     def suppliers(self) -> dict[str, dict[str, Any]]:
         """LFA1 keyed by LIFNR."""

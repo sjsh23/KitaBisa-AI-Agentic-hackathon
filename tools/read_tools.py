@@ -1,4 +1,5 @@
-"""Read-only data tools (PRD section 8): get_open_pos, get_inventory, get_supplier_history.
+"""Read-only data tools (PRD section 8): get_open_pos, get_inventory, get_supplier_history,
+get_quotes, get_market_price.
 
 All return JSON-ready dicts with SAP field names (D-2); amounts IDR, quantities KG, dates ISO.
 """
@@ -44,3 +45,18 @@ def get_supplier_history(lifnr: str, days: int = 180, today: str | None = None,
         "RECEIPTS": [r for r in receipts if r["BUDAT"] >= cutoff],
         "RELIABILITY": posterior(r["LATE"] for r in receipts).as_dict(),
     }
+
+
+def get_quotes(matnr: str, adapter: CsvAdapter | None = None) -> list[dict[str, Any]]:
+    """Current quotes for a material (quotes_asof rows), including off-panel suppliers."""
+    adapter = adapter or default_adapter()
+    return adapter.quotes(matnr)
+
+
+def get_market_price(matnr: str, date: str, adapter: CsvAdapter | None = None) -> dict[str, Any]:
+    """PIHPS anchor price on `date` (the last published day on or before it)."""
+    adapter = adapter or default_adapter()
+    row = adapter.market_price(matnr, date)
+    if row is None:
+        raise KeyError(f"no market price for material {matnr} on or before {date}")
+    return row

@@ -1,16 +1,17 @@
 # GESIT testing guide
 
 Step-by-step checks for what is built so far: the Disruption Detection agent
-(FR-DET-1 to FR-DET-4) and the pieces under it. All data is simulated.
+(FR-DET-1 to FR-DET-4), the Supplier Evaluation agent (FR-SEL-1 to FR-SEL-4) and
+the pieces under them. All data is simulated.
 
 Commands are for Windows PowerShell on the dev machine, where Python is started
 with `py -3.11`. On macOS or Linux use `python` instead. Run everything from the
 repository root.
 
 Steps 1 to 4 need no credentials and no network. Steps 5 to 7 call the real
-SAP-RPT-1.6 deployment and the real Gemini Flash endpoint. As of 9 October 2026,
-steps 5 to 7 have not been run by anyone yet, so their expected results below
-describe what the code should do, not an observed run.
+SAP-RPT-1.6 deployment and the real Gemini Flash endpoint. Detection ran against
+both on 9 and 11 October 2026 and Supplier Evaluation on 15 October 2026 (single
+runs, see `WORKING.md`); the ten-run check in step 7 is still open.
 
 ## Step 1: Install
 
@@ -42,7 +43,7 @@ Then fill in `.env`:
 |---|---|---|
 | `GEMINI_API_KEY` | Gemini Flash assessment | From Google AI Studio. `GOOGLE_API_KEY` works too |
 | `GESIT_LLM_MODEL` | Gemini Flash assessment | Optional. Default `gemini-3.5-flash`, a fixed version |
-| `GESIT_LLM_FALLBACK_MODEL` | Gemini Flash assessment | Optional, empty by default. A second Gemini model (for example `gemini-2.5-flash`), tried only when the main model runs out of output tokens twice |
+| `GESIT_LLM_FALLBACK_MODEL` | Gemini Flash assessment and explanation | Optional. Empty means `gemini-2.5-flash`; a comma-separated list is allowed; `none` switches the fallback off. A fallback model answers only when the model before it is out of quota or runs out of output tokens twice |
 | `AICORE_AUTH_URL` | SAP-RPT-1.6 on AI Core | Must start with `https://`. `/oauth/token` is added by the code |
 | `AICORE_CLIENT_ID`, `AICORE_CLIENT_SECRET` | SAP-RPT-1.6 on AI Core | From the AI Core service key |
 | `AICORE_BASE_URL` | SAP-RPT-1.6 on AI Core | The `AI_API_URL` of the service key, with or without `/v2` |
@@ -65,7 +66,7 @@ git diff --cached --name-only
 py -3.11 -m pytest -q
 ```
 
-Expected: `44 passed`. The tests never call the network: SAP-RPT and Gemini Flash are replaced by fakes.
+Expected: `117 passed`. The tests never call the network: SAP-RPT and Gemini Flash are replaced by fakes.
 
 | Test file | What it proves | Requirements |
 |---|---|---|
@@ -74,6 +75,10 @@ Expected: `44 passed`. The tests never call the network: SAP-RPT and Gemini Flas
 | `tests/test_disruption.py` | The four flag rules, the 3% price threshold, stock-out date and gap | FR-DET-2, FR-DET-3 |
 | `tests/test_rpt_client.py` | Request body, token caching, P(late) parsing, fallback to the posterior | FR-DET-1, FR-DET-4 |
 | `tests/test_detection_agent.py` | Scenarios S1 to S3, urgency order, name masking, survival without the LLM | FR-DET-1 to FR-DET-4, PRD section 10 |
+| `tests/test_supplier_score.py` | Expected-cost formula with hand-checked values (100109 in S1: 0.022 expected days, Rp178,800,000), d_late shrinkage, exclusion reasons, score, cheapest and fastest marks, split orders (capacity at, below and at zero), near tie, comparisons without negative amounts, main driver (risk or purchase) | FR-SEL-1 to FR-SEL-3 |
+| `tests/test_rpt_features.py` | Feature rows for hypothetical POs use the same definitions as `rpt_po_lines`; calendar constants match `data_gen/config.py` | FR-SEL-2, D-4 |
+| `tests/test_grounding.py` | Word limit, dashes, numbers not in the facts, negative Rp amounts, a LIFNR glued to a word, required mentions, the masking check | FR-SEL-4, D-3, PRD section 10 |
+| `tests/test_evaluation_agent.py` | Candidates and exclusions per scenario, the EXCLUDE_FLAGGED_SUPPLIERS switch, replacement quantity, no row above its spare capacity, capacity reserved across cases, facts as phrases, the reason vs the cheapest in S1 to S3 and the check failing without it, masking check blocks the call, survival without the LLM, CLI | FR-SEL-1 to FR-SEL-4, PRD section 10 |
 
 To run one file or one test:
 
@@ -82,16 +87,20 @@ py -3.11 -m pytest tests/test_disruption.py -q
 py -3.11 -m pytest tests/test_detection_agent.py -k s1 -q
 ```
 
-## Step 4: Detection without credentials (offline)
+## Step 4: Detection and Supplier Evaluation without credentials (offline)
 
 This checks the deterministic part and the fallback (FR-DET-4). `--no-llm` skips Gemini Flash.
-If `.env` already holds SAP credentials, rename it for this step or the real SAP-RPT is called.
+If `.env` already holds SAP credentials, set `SAP_RPT_MODE` to `none` for this step
+(`$env:SAP_RPT_MODE = "none"` in PowerShell) or the real SAP-RPT is called.
+
+The run prints the detection report first, then the supplier evaluation for every
+flagged PO. Add `--detect-only` to print the detection report alone.
 
 ```powershell
 py -3.11 -m agents.run S1 --no-llm
 ```
 
-Expected (simulated data):
+Expected detection part (simulated data):
 
 ```
 Stock 19,800 kg, 6.0 days of cover, stock-out date 2026-10-06
@@ -115,6 +124,33 @@ Then the other triggers:
 | `py -3.11 -m agents.run S2 --no-llm` | 4500000432, price revision +5.9% (Rp17,650 to Rp18,700 per kg) |
 | `py -3.11 -m agents.run S3 --no-llm` | 4500000433, capacity shortfall, 4,800 of 12,000 kg deliverable on 2026-10-01, 7,200 kg on 2026-10-11 (GAP +5) |
 | `py -3.11 -m agents.run all --no-llm` | 4500000431, 4500000433, 4500000432, in that order |
+
+Then the supplier evaluation part (simulated data, posterior fallback, so the
+numbers differ from a run with the real SAP-RPT):
+
+| Command | Replacement case(s) | #1 | Cheapest | Fastest |
+|---|---|---|---|---|
+| `S1` | 4500000431, 10,000 kg | 100109, expected cost Rp179,397,321 | 100103 | 100109 |
+| `S2` | 4500000432, 8,000 kg | 100109, Rp144,297,321 | 100101 | 100109 |
+| `S3` | 4500000433, 7,200 kg (the late remainder only) | 100109, Rp130,257,321 | 100101 | 100109 |
+| `all` | 4500000431, then 4500000433, then 4500000432 | 100109; 100109 split (2,500 kg, plus 4,700 kg from 100102); 100102 | 100105 | 100109, 100109, 100102 |
+
+What to check in every table:
+
+- the header says `EXCLUDE_FLAGGED_SUPPLIERS: True`; this rule is not in FR-SEL-1 yet
+  (proposal in `docs/prd_change_proposals.md`). `$env:GESIT_EXCLUDE_FLAGGED_SUPPLIERS = "false"`
+  switches it off; then S2 lists 100103 as a candidate,
+- the excluded list names 100111 as "off the approved panel" (FR-SEL-1, POL-2),
+  100104 and 100110 as "no spare capacity" (unless excluded for a flagged PO), and
+  the supplier of every flagged PO as "has a flagged PO in this run (EXCLUDE_FLAGGED_SUPPLIERS)",
+- rows are sorted by EXPECTED, and EXPECTED = PURCHASE + RISK on every row,
+- the SPARE kg column is never below the kilograms a row is ranked for. A row with
+  less spare capacity than needed says "cannot cover full quantity: split ... kg here +
+  ... kg from ...", and the two parts add up to the needed quantity,
+- in S1, 100109 has 12,500 kg spare and covers all 10,000 kg without a split,
+- in `all`, the second case prints "Spare capacity already given to an earlier case in this
+  run: 100109 10,000 kg", so 100109 has 2,500 kg left and is split. This is the reason
+  100109 looks different in S1 and in `all`; it is not a bug (see `docs/prd_change_proposals.md`).
 
 Run the same command twice and compare: the output must be identical (NFR-2).
 
@@ -172,9 +208,59 @@ If it says `not available (reasoning model unavailable: ...)`:
 | `GEMINI_API_KEY is not set` | Add the key to `.env` (step 2) |
 | `strands-agents[gemini] is not installed` | Step 1 |
 | `ClientError` | Wrong or revoked key, an unknown model id in `GESIT_LLM_MODEL`, or the rate limit of the key was reached. Check the key in Google AI Studio and try a fixed id such as `gemini-2.5-flash` |
-| `ModelThrottledException` | Rate limit reached; wait a minute and rerun |
-| `MaxTokensReachedException` | The model used its whole output budget, mostly on thinking, before finishing the answer. The agent already retries with a larger budget (8,192, then 32,768 tokens). If it still fails, set `GESIT_LLM_FALLBACK_MODEL` in `.env`; the `Assessment (...)` line shows which model answered |
-| `ServerError 503 Service Unavailable` | The Gemini model is overloaded. The agent already retries three times; rerun, and check that `GESIT_LLM_MODEL` is not set to `gemini-flash-latest`, which showed this error often on 9 October 2026 |
+| `Gemini quota used up on every model: ...` | Every model in the chain returned HTTP 429 for a used-up quota. The message names each quota and when it resets (the free tier allows 20 requests per day per model). Wait for the reset, add another model to `GESIT_LLM_FALLBACK_MODEL`, or enable billing on the key. The ranked tables are still printed |
+| `ModelThrottledException` | A short (per-minute) rate limit that did not clear after four tries; wait a minute and rerun |
+| `MaxTokensReachedException` | The model used its whole output budget, mostly on thinking, before finishing the answer. The agent already retries with a larger budget (8,192, then 32,768 tokens). If it still fails, the fallback model (`gemini-2.5-flash` by default) answers; the `Assessment (...)` line shows which model answered |
+| `ServerError 503 UNAVAILABLE` | Google's servers are overloaded; nothing is wrong with the request. The agent tries each model four times (waits of about 2, 5 and 10 s) and then the next model in the chain, so this message means every model stayed overloaded for that call. Rerun in a minute, and check that `GESIT_LLM_MODEL` is not set to `gemini-flash-latest`, which showed this error often on 9 October 2026 |
+
+Then the Supplier Evaluation explanation, one per replacement case. Pass when each
+`Explanation (gemini-3.5-flash):` block:
+
+- recommends the #1 supplier by LIFNR and says why it beats the cheapest and the fastest
+  (or that it is one of them): the cost gap plus the reason, for example "mainly from extra
+  risk cost Rp ... (1.85 expected days without stock against 0.02 for supplier 100109)",
+  or extra purchase cost with the two prices per kg,
+- says "near tie" when #1 and a comparison supplier are less than 1 percent apart in
+  expected cost (happens in `all` with the real SAP-RPT),
+- mentions the short track record when #1 has fewer than 10 past goods receipts (100109 has 4),
+- says the figures are simulated (D-3),
+- is followed by `Explanation check: ... passed`. The check fails on 120 words or more
+  (FR-SEL-4), em or en dashes, any number not in the facts the model received, a negative
+  Rp amount, a LIFNR glued to a word ("from100108"), or a missing required mention
+  (simulated, near tie, past deliveries, the reason amount vs the cheapest and fastest,
+  days without stock). A `FAILED` check does not stop the run; record
+  the text and the listed problems and send them to the team.
+
+Before the check, both the assessment and the explanation are tidied in code: a space
+between a word and a number ("againts0.23" becomes "against 0.23"), a space after
+punctuation, no double spaces or spaces at a line end, and known misspellings corrected.
+Numbers are never changed. When something was fixed, a line `Text tidied in code: ...`
+under the text lists the fixes (JSON: `REASONING_FIXES`, `EXPLANATION_FIXES`).
+
+The header line `Explanation call:` shows the model (`gemini-3.5-flash`), the temperature
+(0.2 or lower, NFR-2) and the masking: names are masked in code and checked before every
+call; if a supplier or buyer name would reach the model, the call is not made and the
+explanation says "masking check failed". SAP Gen AI Hub is not connected yet, so no Gen AI
+Hub masking setting applies.
+
+When the main model is out of quota the run does not stop or hang. Gemini returns
+HTTP 429 in under a second, the model is marked used up for the rest of the run, the
+fallback model answers, and the output ends with a line such as:
+
+```
+LLM notes: gemini-3.5-flash out of quota (GenerateRequestsPerDayPerProjectPerModel-FreeTier, retry in 10.6 h). The next model in the chain was tried (see the model name above each text).
+```
+
+Each `Assessment (...)` and `Explanation (...)` line names the model that wrote it. With
+`--json` the same notes are in `LLM_NOTES`. On 15 October 2026 `all` ran this way in 42
+seconds, every text from `gemini-2.5-flash`, every explanation check passed.
+
+When the main model answers HTTP 503 (overloaded) the agent waits about 2, 5 and 10 s
+between tries (about 17 s in all), then the fallback model answers that one call. The next
+call tries the main model again, so one run can mix models. The notes line then also says,
+for example, `gemini-3.5-flash overloaded (HTTP 503) on 1 call`. If both models stay
+overloaded, one call can take about 35 s before it gives up, so a run with four texts can
+exceed the 60 s target of NFR-1 when Google is overloaded.
 
 ## Step 7: Full run and repeatability (network)
 
@@ -183,16 +269,21 @@ py -3.11 -m agents.run all
 py -3.11 -m agents.run S1 --json > "$env:TEMP\gesit_s1.json"
 ```
 
-Check in the JSON:
+The JSON has two parts, `DETECTION` and `EVALUATION` (with `--detect-only` it is the
+detection report alone, as before). Check:
 
-- `PREDICTION.FALLBACK` is `false`,
-- `STEPS` lists `get_open_pos`, `get_inventory`, `predict_delay_risk`, in that order,
-- `FLAGGED_EBELN` is `["4500000431"]` plus any PO whose SAP-RPT `P_LATE` is 0.5 or more,
-- `REASONING_ERROR` is `null`.
+- `DETECTION.PREDICTION.FALLBACK` is `false`,
+- `DETECTION.STEPS` lists `get_open_pos`, `get_inventory`, `predict_delay_risk`, in that order,
+- `DETECTION.FLAGGED_EBELN` is `["4500000431"]` plus any PO whose SAP-RPT `P_LATE` is 0.5 or more,
+- `DETECTION.REASONING_ERROR` is `null`,
+- `EVALUATION.CASES[0].SCORING.PREDICTION.FALLBACK` is `false` (SAP-RPT scored the candidates),
+- `EVALUATION.CASES[0].EXPLANATION_ERROR` is `null` and `EXPLANATION_CHECK.PASSED` is `true`.
 
-Then run `py -3.11 -m agents.run S1` ten times (NFR-6). The table and the flagged
-list must be the same every time. The assessment wording may vary slightly; its
-numbers must not.
+Then run `py -3.11 -m agents.run S1` ten times (NFR-6). The detection table, the
+flagged list and the ranked supplier table must be the same every time. The
+assessment and explanation wording may vary slightly; their numbers must not.
+One S1 run took 33 seconds on 15 October 2026 (two SAP-RPT calls, two Gemini calls;
+NFR-1 allows 60, target 20).
 
 ## What to report back
 
@@ -200,10 +291,14 @@ After steps 5 to 7, update `WORKING.md` (status of section 7.2, done log) with:
 
 1. SAP-RPT: worked or not, the `P_LATE` of the five open POs, call time.
 2. Gemini Flash: worked or not, and which model id was used.
-3. Any scenario whose flagged list differs from step 4, and why (a real SAP-RPT `P_LATE` at or above 0.5 adds a "PREDICTED_LATE" flag, which is expected behaviour).
+3. Supplier Evaluation: the #1, cheapest and fastest supplier per scenario, and every
+   explanation check that did not pass.
+4. Any scenario whose flagged list differs from step 4, and why (a real SAP-RPT `P_LATE` at or above 0.5 adds a "PREDICTED_LATE" flag, which is expected behaviour).
 
 ## Not covered yet
 
-Supplier Evaluation, Action, Integrity Guard, the supervisor, Cedar policies and
-the Joule UI do not exist yet, so there is nothing to test for them. Add a
-section here when each one is built.
+Action, Integrity Guard, the supervisor, Cedar policies and the Joule UI do not
+exist yet, so there is nothing to test for them. The Supplier Evaluation
+explanation comes from Gemini Flash until SAP Gen AI Hub is connected (FR-SEL-4,
+FR-SEL-5), so contract grounding cannot be tested yet. Add a section here when
+each one is built.
