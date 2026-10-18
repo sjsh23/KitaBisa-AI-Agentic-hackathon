@@ -94,7 +94,7 @@ If `.env` already holds SAP credentials, set `SAP_RPT_MODE` to `none` for this s
 (`$env:SAP_RPT_MODE = "none"` in PowerShell) or the real SAP-RPT is called.
 
 The run prints the detection report first, then the supplier evaluation for every
-flagged PO. Add `--detect-only` to print the detection report alone.
+flagged PO, then the draft POs (Action). Add `--detect-only` to print the detection report alone.
 
 ```powershell
 py -3.11 -m agents.run S1 --no-llm
@@ -151,6 +151,30 @@ What to check in every table:
 - in `all`, the second case prints "Spare capacity already given to an earlier case in this
   run: 100109 10,000 kg", so 100109 has 2,500 kg left and is split. This is the reason
   100109 looks different in S1 and in `all`; it is not a bug (see `docs/prd_change_proposals.md`).
+
+Then the action part, `GESIT Action` (FR-ACT-1 to FR-ACT-3, POL-1 to POL-4; simulated data,
+posterior fallback). The agent drafts a PO for every #1 (one per supplier for a split),
+checks whether the buyer of the replaced PO may release it, and routes it. It never
+releases a PO itself.
+
+| Command | Draft(s) | NETWR | What happens next |
+|---|---|---|---|
+| `S1` | 4500000435, 100109, 10,000 kg | Rp175,500,000 | release by BUYER01 denied by POL-1, submitted as APR-4500000435, waiting for the manager |
+| `S2` | 4500000435, 100109, 8,000 kg | Rp140,400,000 | within policy, waiting for BUYER02's one-click approval |
+| `S3` | 4500000435, 100109, 7,200 kg | Rp126,360,000 | within policy, waiting for BUYER04's one-click approval |
+| `all` | 4500000435 (as S1); 4500000436 and 4500000437 (the 100109 and 100102 split for 4500000433); 4500000438 (100102, 8,000 kg) | Rp175,500,000; Rp43,875,000 and Rp86,480,000; Rp147,200,000 | manager for the first, buyer one-click for the rest |
+
+What to check:
+
+- draft numbers continue after the last PO in EKKO (4500000434), and start again at
+  4500000435 on every run (drafts live in memory for one run, NFR-2),
+- every draft above Rp150,000,000 says "denied by POL-1" and has an `APR-` request id;
+  every draft at or below it says "waiting for the buyer's one-click approval",
+- the last line says "Handed back to a human: yes".
+
+Add `--approve` to simulate the human clicks: the manager (MANAGER01) releases what was
+routed to it and each buyer releases its own drafts. Every order then says
+"Released by ..." and the last line says "Handed back to a human: no".
 
 Run the same command twice and compare: the output must be identical (NFR-2).
 
@@ -269,7 +293,8 @@ py -3.11 -m agents.run all
 py -3.11 -m agents.run S1 --json > "$env:TEMP\gesit_s1.json"
 ```
 
-The JSON has two parts, `DETECTION` and `EVALUATION` (with `--detect-only` it is the
+The JSON has the parts `DETECTION`, `EVALUATION`, `ACTION`, `POS` (every PO GESIT
+created in the run, with its history) and `LLM_NOTES` (with `--detect-only` it is the
 detection report alone, as before). Check:
 
 - `DETECTION.PREDICTION.FALLBACK` is `false`,
@@ -277,7 +302,9 @@ detection report alone, as before). Check:
 - `DETECTION.FLAGGED_EBELN` is `["4500000431"]` plus any PO whose SAP-RPT `P_LATE` is 0.5 or more,
 - `DETECTION.REASONING_ERROR` is `null`,
 - `EVALUATION.CASES[0].SCORING.PREDICTION.FALLBACK` is `false` (SAP-RPT scored the candidates),
-- `EVALUATION.CASES[0].EXPLANATION_ERROR` is `null` and `EXPLANATION_CHECK.PASSED` is `true`.
+- `EVALUATION.CASES[0].EXPLANATION_ERROR` is `null` and `EXPLANATION_CHECK.PASSED` is `true`,
+- `ACTION.CASES[0].ORDERS[0].NEXT` is `MANAGER_APPROVAL` when its `NETWR` is above
+  Rp150,000,000, otherwise `BUYER_ONE_CLICK`; `POS[0].HISTORY` has no `release_po` event.
 
 Then run `py -3.11 -m agents.run S1` ten times (NFR-6). The detection table, the
 flagged list and the ranked supplier table must be the same every time. The
@@ -297,8 +324,10 @@ After steps 5 to 7, update `WORKING.md` (status of section 7.2, done log) with:
 
 ## Not covered yet
 
-Action, Integrity Guard, the supervisor, Cedar policies and the Joule UI do not
-exist yet, so there is nothing to test for them. The Supplier Evaluation
+Integrity Guard, the supervisor, Cedar policies on AgentCore and the Joule UI do
+not exist yet, so there is nothing to test for them. The Action agent's policies
+POL-1 to POL-4 run as local Python (`policy/local_policy.py`, tests in
+`tests/test_policy.py`) until AgentCore Policy is set up. The Supplier Evaluation
 explanation comes from Gemini Flash until SAP Gen AI Hub is connected (FR-SEL-4,
 FR-SEL-5), so contract grounding cannot be tested yet. Add a section here when
 each one is built.

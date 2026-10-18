@@ -45,8 +45,10 @@ Current progress (what is done, what is next) is tracked in the working log, imp
 cd data_gen && python generate.py && python validate.py
 # tests
 pytest -q
-# Disruption Detection, then Supplier Evaluation, in the terminal: S1, S2, S3, scan or all
-# (add --no-llm, --json, or --detect-only for Detection alone)
+# Disruption Detection, then Supplier Evaluation, then Action (draft POs routed by policy),
+# in the terminal: S1, S2, S3, scan or all
+# (add --no-llm, --json, --approve to simulate the buyer and manager clicks,
+# or --detect-only for Detection alone)
 python -m agents.run S1
 ```
 

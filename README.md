@@ -69,7 +69,7 @@ Folders are added as they are built.
 | `docs/` | Data dictionary; later the assumptions page, architecture diagram and Q&A prep |
 | `tests/` | Tests and an offline fake PIHPS file maker |
 | `adapters/`, `scoring/`, `tools/`, `agents/` | S/4-shaped data access, expected-cost scoring, MCP tools, Strands supervisor and sub-agents |
-| `integrations/sap/`, `policy/`, `eval/` | SAP-RPT and Gen AI Hub clients, Cedar policies, Monte Carlo and model benchmarks |
+| `integrations/sap/`, `policy/`, `eval/` | SAP-RPT and Gen AI Hub clients, policies POL-1 to POL-4 (local Python now, Cedar later), Monte Carlo and model benchmarks |
 | `ui/`, `infra/`, `scripts/` | Joule front end, AWS setup, demo reset and data load |
 
 One rule worth knowing before reading the code: `data_gen/out/_truth/` holds

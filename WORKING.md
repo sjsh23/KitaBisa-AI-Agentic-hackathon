@@ -2,7 +2,7 @@
 
 Where the project stands right now. Requirements live in `PRD.md`; this file only tracks progress against them.
 
-**Last updated: 17 October 2026**
+**Last updated: 18 October 2026**
 
 ## How to use this file
 
@@ -17,34 +17,35 @@ Where the project stands right now. Requirements live in `PRD.md`; this file onl
 
 ## Current position
 
-Milestone "5-11 Oct, core loop in terminal" (PRD section 14). The Disruption Detection agent runs in the terminal (`python -m agents.run S1`) on the CSV adapter. On 9 Oct it ran end to end on scenario S1 against the real SAP-RPT-1.6 deployment (no fallback) and real Gemini (`gemini-3.5-flash`), and `all` (the three notices together) ran the same way after the output token fix. On 11 Oct S1, S2, S3 and `all` each ran once against the real services, after S3 got an explicit remainder date (GAP +5 for the 7,200 kg remainder, simulated). On 15 Oct the Supplier Evaluation agent was added: `python -m agents.run S1` now prints the detection report and then, for every flagged PO, a ranked table of backup suppliers by expected cost with an explanation under 120 words. S1 and S2 ran once against the real services (SAP-RPT scored the candidate suppliers without fallback; explanation checks passed; S1 took 33 s). Later on 15 Oct the review fixes went in: spare capacity and splits are shown per row (the S1 versus `all` difference for 100109 was the capacity reservation between cases, not a bug), the exclusion of flagged suppliers became the switch EXCLUDE_FLAGGED_SUPPLIERS with a proposal for the team in `docs/prd_change_proposals.md`, and the explanation gets ready-made phrases plus a stricter check. S1 and `all` then ran against the real services with every explanation check passing (S1 took 29 s). Later the free-tier quota of `gemini-3.5-flash` (20 requests per day) ran out and `all` hung for over 10 minutes; now a used-up model is skipped within a second and `gemini-2.5-flash` answers (`all` took 42 s, all checks passed). On 16 Oct the explanation got the reason #1 beats the cheapest, not only the cost gap (for example "mainly from extra risk cost Rp ... (1.85 expected days without stock against 0.02 for supplier 100109)", simulated); S2 and S3 ran against the real services with the check passing. Later on 16 Oct a Gemini HTTP 503 (overloaded) made some texts "not available" at random; the agent now retries longer and then lets `gemini-2.5-flash` answer that call (not yet run against the real services). On 17 Oct both model texts got a tidy step in code (spacing such as "againts0.23" and misspellings, never numbers), with the fixes listed under each text. The ten-run check (NFR-6) has not been run against the real services yet. Action, Integrity Guard and the supervisor do not exist yet.
+Milestone "5-11 Oct, core loop in terminal" (PRD section 14). The Disruption Detection agent runs in the terminal (`python -m agents.run S1`) on the CSV adapter. On 9 Oct it ran end to end on scenario S1 against the real SAP-RPT-1.6 deployment (no fallback) and real Gemini (`gemini-3.5-flash`), and `all` (the three notices together) ran the same way after the output token fix. On 11 Oct S1, S2, S3 and `all` each ran once against the real services, after S3 got an explicit remainder date (GAP +5 for the 7,200 kg remainder, simulated). On 15 Oct the Supplier Evaluation agent was added: `python -m agents.run S1` now prints the detection report and then, for every flagged PO, a ranked table of backup suppliers by expected cost with an explanation under 120 words. S1 and S2 ran once against the real services (SAP-RPT scored the candidate suppliers without fallback; explanation checks passed; S1 took 33 s). Later on 15 Oct the review fixes went in: spare capacity and splits are shown per row (the S1 versus `all` difference for 100109 was the capacity reservation between cases, not a bug), the exclusion of flagged suppliers became the switch EXCLUDE_FLAGGED_SUPPLIERS with a proposal for the team in `docs/prd_change_proposals.md`, and the explanation gets ready-made phrases plus a stricter check. S1 and `all` then ran against the real services with every explanation check passing (S1 took 29 s). Later the free-tier quota of `gemini-3.5-flash` (20 requests per day) ran out and `all` hung for over 10 minutes; now a used-up model is skipped within a second and `gemini-2.5-flash` answers (`all` took 42 s, all checks passed). On 16 Oct the explanation got the reason #1 beats the cheapest, not only the cost gap (for example "mainly from extra risk cost Rp ... (1.85 expected days without stock against 0.02 for supplier 100109)", simulated); S2 and S3 ran against the real services with the check passing. Later on 16 Oct a Gemini HTTP 503 (overloaded) made some texts "not available" at random; the agent now retries longer and then lets `gemini-2.5-flash` answer that call (not yet run against the real services). On 17 Oct both model texts got a tidy step in code (spacing such as "againts0.23" and misspellings, never numbers), with the fixes listed under each text. The ten-run check (NFR-6) has not been run against the real services yet. On 18 Oct the Action agent was added: after the ranked table, `python -m agents.run S1` drafts a PO for the #1 supplier (one per supplier for a split), checks whether the buyer may release it, and routes it. S1 (Rp175,500,000, simulated) is denied by POL-1 and submitted to the manager; S2 and S3 wait for the buyer's one-click approval. The agent never releases a PO itself (POL-4); `--approve` simulates the buyer and manager clicks. POL-1 to POL-4 run as local Python in `policy/` until AgentCore Policy (Cedar) is set up. Integrity Guard and the supervisor do not exist yet.
 
 ## Next up (in order)
 
 1. Team to decide on `docs/prd_change_proposals.md` (exclusion rule, keep 100103 in S2 or not, split wording) and the other choices under "To confirm with the team" below; then copy the agreed text into `PRD.md` and its Changelog.
 2. Gemini quota and overload: enable billing on the key, or the ten-run check (NFR-6) and rehearsals will run out of the free tier (20 requests per day per model). Team to confirm the fallback model, now also used on HTTP 503 (`docs/prd_change_proposals.md`, item 3).
-3. Finish `docs/testing.md` steps 5 to 7 against the real services: ten consecutive S1 runs (NFR-6), now covering both agents.
-4. Action agent: `draft_po`, `submit_for_approval`, `release_po` (FR-ACT-1 to FR-ACT-3).
-5. Local Strands supervisor that runs Detection, Evaluation, Action in order (FR-SUP-1 to FR-SUP-3).
-6. Milestone is done when `python -m agents.run S1` prints the plan, the ranked table, an explanation under 120 words (FR-SEL-4) and a draft PO (FR-ACT-1).
+3. Finish `docs/testing.md` steps 5 to 7 against the real services: ten consecutive S1 runs (NFR-6), now covering all three agents.
+4. Local Strands supervisor that runs Detection, Evaluation, Action in order and prints the plan (FR-SUP-1 to FR-SUP-3).
+5. Milestone is done when `python -m agents.run S1` prints the plan, the ranked table, an explanation under 120 words (FR-SEL-4) and a draft PO (FR-ACT-1). Only the plan is missing now.
+6. Integrity Guard: buyer's own supplier choice with a justification before `draft_po` (FR-INT-1, FR-INT-2; the Action agent drafts only the #1 until then), pattern flags (FR-INT-3, FR-INT-4).
+7. Cedar version of `policy/local_policy.py` on AgentCore Policy, same tests (POL-1 to POL-4, milestone 12-18 Oct).
 
 ## Status by PRD section
 
 | Section | Scope | Status | Evidence or what is missing |
 |---|---|---|---|
 | 6 | Data and generator | DONE | `data_gen/`, dataset regenerated 8 Oct, `docs/data_dictionary.md`. Dataset size is still an open decision (section 17) |
-| 7.1 | Supervisor (FR-SUP) | NOT STARTED | no supervisor yet; `agents/run.py` calls Detection, then Evaluation, in a fixed order |
+| 7.1 | Supervisor (FR-SUP) | NOT STARTED | no supervisor yet; `agents/run.py` calls Detection, then Evaluation, then Action, in a fixed order; Action already hands back to a human when policy denies release (FR-SUP-2) |
 | 7.2 | Disruption Detection (FR-DET) | IN PROGRESS | `agents/detection.py`, `scoring/disruption.py`, `integrations/sap/rpt_client.py`, tests pass, S1, S2, S3 and `all` ran against real SAP-RPT-1.6 and Gemini; S3 gap uses the remainder date from `scenarios.json`. Missing: the ten-run check on the real services |
 | 7.3 | Supplier Evaluation (FR-SEL) | IN PROGRESS | `agents/evaluation.py`, `scoring/supplier_score.py`, `scoring/rpt_features.py`, `agents/grounding.py`, `tools/score.py`; FR-SEL-1 to FR-SEL-3 done (spare capacity per row, "cannot cover full quantity" splits, near tie); FR-SEL-4 done with Gemini Flash, phrases without negative amounts, the reason #1 beats the cheapest and the fastest (main driver: risk or purchase cost), masking check before the call, spacing and spelling tidied in code, and an explanation check after it. S1, S2 and `all` ran against real SAP-RPT-1.6 and Gemini. Waiting: team decision on EXCLUDE_FLAGGED_SUPPLIERS (`docs/prd_change_proposals.md`). Missing: Gen AI Hub for the explanation (FR-SEL-4) and contract grounding (FR-SEL-5), the ten-run check |
-| 7.4 | Action (FR-ACT) | NOT STARTED | no `tools/` |
+| 7.4 | Action (FR-ACT) | IN PROGRESS | `agents/action.py`, `tools/action.py`, `adapters/po_store.py`; FR-ACT-1 (draft with S/4 fields, one per supplier for a split), FR-ACT-2 (POL-1 denial routes to `submit_for_approval`), FR-ACT-3 (buyer one-click below the threshold, simulated with `--approve`) done locally, offline tests pass. Missing: drafts in DynamoDB instead of memory, Lambda handlers behind the Gateway, the approve buttons in Joule, a run against the real services |
 | 7.5 | Integrity Guard (FR-INT) | NOT STARTED | the BUYER03 / 100107 pattern is in the data, no detection code |
 | 7.6 | Evaluation and Learning (FR-EVA) | IN PROGRESS | reliability posterior in `scoring/reliability.py` (FR-EVA-2, FR-EVA-3 math). Missing: `record_outcome`, chart, `eval/`; classical baselines exist only inside `data_gen/validate.py` |
-| 8 | Tool contracts (14 tools) | IN PROGRESS | 7 of 14 as plain Python in `tools/`: `get_open_pos`, `get_inventory`, `get_supplier_history`, `get_quotes`, `get_market_price`, `predict_delay_risk`, `score_suppliers` |
-| 9 | Policies (POL-1 to POL-4) | NOT STARTED | no `policy/`; panel field `LFA1.ZZPANEL` is ready for POL-2 |
+| 8 | Tool contracts (14 tools) | IN PROGRESS | 10 of 14 as plain Python in `tools/`: `get_open_pos`, `get_inventory`, `get_supplier_history`, `get_quotes`, `get_market_price`, `predict_delay_risk`, `score_suppliers`, `draft_po`, `submit_for_approval`, `release_po`. Missing: `get_po`, `record_override`, `record_outcome`, `get_integrity_flags` |
+| 9 | Policies (POL-1 to POL-4) | IN PROGRESS | `policy/local_policy.py` checks every action tool call (POL-1 threshold, POL-2 panel via `LFA1.ZZPANEL`, POL-3 tool list, POL-4 agents never release); `tests/test_policy.py` has one allow and one deny per policy. Missing: the Cedar policies on AgentCore Policy |
 | 10 | Responsible AI (masking, grounding, audit trail) | IN PROGRESS | Detection and Evaluation send only LIFNR numbers to Gemini Flash, never supplier or buyer names; the explanation is checked for numbers that are not in the facts. Missing: Gen AI Hub masking and grounding, decision log |
 | 11 | NFR-1 to NFR-6 | IN PROGRESS | NFR-4: `.env` is gitignored, template in `.env.example` (was missing from the repository, added 15 Oct, names only). NFR-2: temperature capped at 0.2 in `agents/llm.py`; fallback model `gemini-2.5-flash` only on quota or token exhaustion, named in the output (team to confirm). NFR-1, NFR-6: a used-up Gemini quota fails over in under a second instead of hanging; a Gemini 503 (overloaded) is retried for about 17 s, then the fallback model answers that call (team to confirm, `docs/prd_change_proposals.md` item 3). Others not started |
 | 12 | Demo script, backup video, deck | NOT STARTED | |
-| 13 | Repository layout | IN PROGRESS | present: `data_gen/`, `docs/`, `tests/`, `adapters/`, `tools/`, `scoring/`, `integrations/sap/`, `agents/`. Missing: `policy/`, `eval/`, `ui/`, `infra/`, `scripts/` |
+| 13 | Repository layout | IN PROGRESS | present: `data_gen/`, `docs/`, `tests/`, `adapters/`, `tools/`, `scoring/`, `integrations/sap/`, `agents/`, `policy/`. Missing: `eval/`, `ui/`, `infra/`, `scripts/` |
 | 17 | Open decisions | IN PROGRESS | open: Gemini access path when deployed, approval threshold, dataset size, cooking oil, Joule UI details |
 
 ## Milestones (PRD section 14)
@@ -53,7 +54,7 @@ Milestone "5-11 Oct, core loop in terminal" (PRD section 14). The Disruption Det
 |---|---|---|
 | by 5 Oct | Accounts, budget alert, BAIP request, role split | IN PROGRESS (not visible in the repository, confirm with the team) |
 | by 6 Oct | Synthetic data generator | DONE |
-| 5-11 Oct | Core loop in terminal (RPT stubbed) | IN PROGRESS, late (Detection and Supplier Evaluation done locally; Action and supervisor missing) |
+| 5-11 Oct | Core loop in terminal (RPT stubbed) | IN PROGRESS, late (Detection, Supplier Evaluation and Action done locally; supervisor and its plan missing) |
 | 12-18 Oct | SAP-RPT, Gen AI Hub, AgentCore, Gateway, Policy | NOT STARTED |
 | 19-25 Oct | Integrity Guard, Monte Carlo, reliability update, Joule UI (freeze 25 Oct) | NOT STARTED |
 | 26-31 Oct | Reset script, 10x runs, backup video, deck, rehearsals | NOT STARTED |
@@ -75,7 +76,20 @@ Choices made inside FR-SEL-1 to FR-SEL-4 where the PRD is silent. None changes a
 - The newest supplier 100109 (4 goods receipts) comes out #1 in most cases. The table shows the receipt count (GRs) and the explanation says when #1 rests on fewer than 10 receipts.
 - The explanation comes from Gemini Flash until SAP Gen AI Hub is connected (FR-SEL-4 names Gen AI Hub). It never cites contract terms, so FR-SEL-5 is not started.
 
+## To confirm with the team (Action, 18 Oct)
+
+Choices made inside FR-ACT-1 to FR-ACT-3 and POL-1 to POL-4 where the PRD is silent. None changes a requirement; object and they change.
+
+- The agent never releases a PO, even below the threshold: it drafts, and the buyer clicks (FR-ACT-3). POL-4 denies `release_po` to every agent principal; only a buyer or manager releases.
+- The buyer of a replacement PO (ERNAM) is the buyer of the PO it replaces. The manager is the placeholder user MANAGER01 (no manager exists in the data).
+- POL-1 is checked per PO. A split recommendation gives two drafts, each checked on its own NETWR, so two parts can each stay under Rp150 juta while their total is above it (in `all`, offline: Rp43,875,000 plus Rp86,480,000, simulated). Alternative: check the split's total.
+- Draft POs live in memory for one run (fresh numbers from 4500000435 on every run, NFR-2); DynamoDB replaces this when deployed. The PO being replaced is not cancelled or changed; the draft names it in REPLACES_EBELN.
+- The agent drafts only the #1 supplier. A buyer's other choice waits for the Integrity Guard (FR-INT-1 requires the justification before the draft).
+- No LLM text in the Action step; all values come from the evaluation and the tools.
+
 ## Done log (newest first)
+
+- 2026-10-18: Action agent (FR-ACT-1 to FR-ACT-3, POL-1 to POL-4, FR-SUP-2, NFR-2). `tools/action.py`: `draft_po` (S/4 fields copied from the replaced PO, EBELN continues after EKKO, NETWR integer IDR), `submit_for_approval` (request id `APR-<EBELN>`), `release_po` (panel flag read again from LFA1); every call checked by `policy/local_policy.py` and logged in the PO's history. `adapters/po_store.py`: in-memory PO store. `agents/action.py`: draft for #1 (two for a split), release check for the buyer, POL-1 denial routed to the manager, `human_approvals` for the clicks. CLI prints a `GESIT Action` section, `--approve` simulates the buyer and manager, JSON has `ACTION` and `POS`. Offline: S1 Rp175,500,000 to the manager, S2 and S3 to buyer one-click (simulated). Not yet run against the real services. `docs/testing.md`, `CLAUDE.md` and `README.md` updated. 143 tests.
 
 - 2026-10-17: Spacing and spelling in the model texts (FR-SEL-4, NFR-5). Gemini sometimes glued words and numbers or misspelled ("againts0.23"); the Detection assessment had no text check at all. New `grounding.tidy_text` runs on the assessment and on the explanation before the check: a space between word and number, a space after punctuation, no double or line-end spaces, known misspellings and one-letter-swap typos of words from the prompt and facts corrected. It never changes a number. Fixes are listed under the text (`Text tidied in code: ...`, JSON `REASONING_FIXES`, `EXPLANATION_FIXES`); both prompts also ask for correct spelling and spacing. S1 ran against the real services, explanation check passed (SAP-RPT timed out on that run, so the posterior fallback was used). 124 tests.
 

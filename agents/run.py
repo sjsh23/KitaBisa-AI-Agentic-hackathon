@@ -6,9 +6,11 @@
     python -m agents.run S1 --json        full reports as JSON
     python -m agents.run S1 --no-llm      skip the Gemini Flash texts
     python -m agents.run S1 --detect-only Disruption Detection only
+    python -m agents.run S1 --approve     also simulate the human approvals (buyer, manager)
 
 Disruption Detection (FR-DET) runs first, then Supplier Evaluation (FR-SEL) for
-every flagged PO. Action and the supervisor come later.
+every flagged PO, then Action (FR-ACT): a draft PO for each #1, routed by policy.
+The supervisor comes later.
 """
 from __future__ import annotations
 
@@ -17,7 +19,8 @@ import json
 from typing import Any
 
 from adapters import default_adapter
-from agents import llm
+from agents import action, llm
+from agents.action import ActionAgent, human_approvals
 from agents.detection import DetectionAgent
 from agents.evaluation import EvaluationAgent
 from integrations.sap.rpt_client import RptClient
@@ -199,14 +202,57 @@ def format_evaluation(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _next_text(order: dict[str, Any], buyer_id: str) -> str:
+    """What happens to one draft next, and which policy decided it (FR-ACT-2, FR-ACT-3)."""
+    check = order["RELEASE_CHECK"]
+    if order["NEXT"] == action.NEXT_DONE:
+        return f"Released by {order['RELEASED_BY']}."
+    if order["NEXT"] == action.NEXT_BUYER:
+        return f"Within policy for {buyer_id}: waiting for the buyer's one-click approval."
+    if order["NEXT"] == action.NEXT_MANAGER:
+        return (f"Release by {buyer_id} denied by {check['POLICY']}: {check['REASON']}. "
+                f"Submitted for approval {order['APPROVAL_REQUEST_ID']}, waiting for the "
+                f"procurement manager.")
+    return f"Blocked by {check['POLICY']}: {check['REASON']}."
+
+
+def format_action(report: dict[str, Any]) -> str:
+    """Plain-text view of an action report: the drafts and who decides next."""
+    lines = [f"GESIT Action ({report['DATA_NOTE']})",
+             f"Drafts by {report['PRINCIPAL']}. Approval threshold "
+             f"Rp{report['APPROVAL_THRESHOLD_IDR']:,} (POL-1), approved panel only (POL-2), "
+             "agents never release a PO (POL-4)."]
+    if not report["CASES"]:
+        return "\n".join(lines + ["No recommendation, nothing to draft."])
+    for case in report["CASES"]:
+        lines += ["", f"Replacement for PO {case['EBELN']} (buyer {case['BUYER']}, "
+                      f"{case['QTY']:,.0f} kg)"]
+        if case["NOTE"]:
+            lines.append(f"  {case['NOTE']}")
+            continue
+        lines.append(f"{'EBELN':<12}{'LIFNR':<8}{'MENGE kg':>9}{'NETPR':>8}{'NETWR Rp':>14}  "
+                     f"{'EINDT':<12}STATUS")
+        for order in case["ORDERS"]:
+            netwr = "-" if order["NETWR"] is None else f"{order['NETWR']:,}"
+            lines += [f"{order['EBELN'] or '-':<12}{order['LIFNR']:<8}{order['MENGE']:>9,.0f}"
+                      f"{order['NETPR']:>8,}{netwr:>14}  {order['EINDT']:<12}{order['STATUS']}",
+                      f"  {_next_text(order, case['BUYER'])}"]
+    lines += ["", "Handed back to a human: " + ("yes" if report["HANDED_BACK"] else "no")]
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Run GESIT Disruption Detection and Supplier Evaluation.")
+    parser = argparse.ArgumentParser(
+        description="Run GESIT Disruption Detection, Supplier Evaluation and Action.")
     parser.add_argument("scenario", nargs="?", default="scan", help="S1, S2, S3, scan or all")
     parser.add_argument("--matnr", default=DEFAULT_MATNR)
     parser.add_argument("--json", action="store_true", help="print the full reports as JSON")
     parser.add_argument("--no-llm", action="store_true", help="skip the Gemini Flash texts")
     parser.add_argument("--detect-only", action="store_true",
                         help="run Disruption Detection only")
+    parser.add_argument("--approve", action="store_true",
+                        help="simulate the human clicks: each buyer approves its drafts within "
+                             "policy, the manager approves the ones routed to it")
     args = parser.parse_args(argv)
 
     try:   # local development reads credentials from .env (NFR-4)
@@ -228,12 +274,17 @@ def main(argv: list[str] | None = None) -> None:
 
     evaluator = EvaluationAgent(adapter=adapter, rpt_client=rpt_client)
     evaluation = evaluator.evaluate(report) if args.no_llm else evaluator.run(report)
+
+    actor = ActionAgent(adapter=adapter)   # in-memory PO store: every run starts clean (NFR-2)
+    actions = actor.act(evaluation)
+    if args.approve:
+        actions = human_approvals(actions, actor.store)
     if args.json:
-        print(json.dumps({"DETECTION": report, "EVALUATION": evaluation,
-                          "LLM_NOTES": llm_notes()}, indent=2))
+        print(json.dumps({"DETECTION": report, "EVALUATION": evaluation, "ACTION": actions,
+                          "POS": actor.store.all(), "LLM_NOTES": llm_notes()}, indent=2))
     else:
         print(format_report(report) + "\n\n" + format_evaluation(evaluation)
-              + quota_text(llm_notes()))
+              + "\n\n" + format_action(actions) + quota_text(llm_notes()))
 
 
 def llm_notes() -> list[str]:

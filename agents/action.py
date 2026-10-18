@@ -1,0 +1,165 @@
+"""Action agent (FR-ACT-1 to FR-ACT-3, POL-1 to POL-4).
+
+Runs after Supplier Evaluation, in a fixed order (FR-SUP-3, deterministic path).
+For every case with a recommendation:
+
+1. `draft_po` for the #1 supplier (FR-ACT-1); a split recommendation gets one
+   draft per supplier, so the kilograms add up to the replacement quantity.
+   ERNAM is the buyer of the PO being replaced. The agent never picks another
+   supplier: a buyer's own choice needs a justification first (FR-INT-1), which
+   comes with the Integrity Guard.
+2. Policy check: may that buyer release the draft (`policy.authorize`, the same
+   check `release_po` runs)? If yes, the draft waits for the buyer's one-click
+   approval (FR-ACT-3). If POL-1 denies it (NETWR above the threshold), the agent
+   calls `submit_for_approval` and hands back to the manager (FR-ACT-2, FR-SUP-2).
+
+The agent never releases a PO: `release_po` is an approval tool and POL-4 denies
+it to agents. Only a human principal releases (`human_approvals` stands in for
+the clicks in the terminal). No LLM is used here; every value comes from the
+evaluation report and the tools.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+from adapters import CsvAdapter, PoStore, default_adapter
+from adapters.po_store import STATUS_RELEASED
+from policy import AGENT, APPROVAL_THRESHOLD_IDR, Principal, authorize, buyer, manager
+from tools import draft_po, release_po, submit_for_approval
+
+AGENT_NAME = "action"
+
+NEXT_BUYER = "BUYER_ONE_CLICK"       # within policy for the buyer (FR-ACT-3)
+NEXT_MANAGER = "MANAGER_APPROVAL"    # POL-1 denied the buyer, routed to the manager (FR-ACT-2)
+NEXT_BLOCKED = "BLOCKED"             # denied for another reason, nobody can release it
+NEXT_DONE = "RELEASED"
+
+
+def order_parts(row: dict[str, Any]) -> list[dict[str, Any]]:
+    """The orders behind one ranked row: one, or two for a split (FR-SEL-2)."""
+    parts = [{"LIFNR": row["LIFNR"], "MENGE": row["MENGE"], "NETPR": row["NETPR"],
+              "EINDT": row["ARRIVAL"]}]
+    split = row.get("SPLIT_WITH")
+    if split:
+        parts.append({"LIFNR": split["LIFNR"], "MENGE": split["MENGE"], "NETPR": split["NETPR"],
+                      "EINDT": split["ARRIVAL"]})
+    return parts
+
+
+def reason_text(case: dict[str, Any], part_no: int, n_parts: int) -> str:
+    """Why the draft exists, for the PO text and the audit trail (no names, simulated)."""
+    table = case["SCORING"]
+    best = table["CANDIDATES"][0]
+    reasons = ", ".join(c.lower().replace("_", " ") for c in case["REASON_CODES"])
+    text = (f"Replaces PO {case['EBELN']} ({reasons}). GESIT rank 1 of "
+            f"{len(table['CANDIDATES'])}, expected cost Rp{best['EXPECTED_COST']:,} (simulated).")
+    if n_parts > 1:
+        text += f" Split order, part {part_no} of {n_parts}."
+    return text
+
+
+class ActionAgent:
+    """Drafts the recommended replacement POs and routes them by policy."""
+
+    def __init__(self, adapter: CsvAdapter | None = None, store: PoStore | None = None,
+                 principal: Principal = AGENT) -> None:
+        self.adapter = adapter or default_adapter()
+        self.store = store or PoStore(self.adapter)
+        self.principal = principal
+
+    def act(self, evaluation: dict[str, Any]) -> dict[str, Any]:
+        """Drafts and policy routing for every case of a Supplier Evaluation report."""
+        buyers = {line["EBELN"]: line["ERNAM"] for line in self.adapter.po_lines()}
+        steps: list[dict[str, Any]] = []
+        cases = []
+        for case in evaluation["CASES"]:
+            buyer_id = buyers[case["EBELN"]]
+            out = {"EBELN": case["EBELN"], "LIFNR": case["LIFNR"], "BUYER": buyer_id,
+                   "QTY": case["QTY"], "ORDERS": [], "NOTE": None}
+            if not case["SCORING"]["CANDIDATES"]:
+                out["NOTE"] = "no candidate supplier, nothing drafted; handed back to the buyer"
+                cases.append(out)
+                continue
+            parts = order_parts(case["SCORING"]["CANDIDATES"][0])
+            for i, part in enumerate(parts, 1):
+                out["ORDERS"].append(self._draft_and_route(
+                    case, part, reason_text(case, i, len(parts)), buyer(buyer_id), steps))
+            cases.append(out)
+        return {
+            "AGENT": AGENT_NAME,
+            "DATA_NOTE": "simulated data",
+            "MATNR": evaluation["MATNR"],
+            "TODAY": evaluation["TODAY"],
+            "PRINCIPAL": self.principal.id,
+            "APPROVAL_THRESHOLD_IDR": APPROVAL_THRESHOLD_IDR,
+            "STEPS": steps,
+            "CASES": cases,
+            "HANDED_BACK": handed_back(cases),   # FR-SUP-2: a human decides next
+        }
+
+    def _draft_and_route(self, case: dict[str, Any], part: dict[str, Any], reason: str,
+                         owner: Principal, steps: list[dict[str, Any]]) -> dict[str, Any]:
+        """One draft (FR-ACT-1), the buyer's release check, and approval routing (FR-ACT-2)."""
+        drafted = draft_po(part["LIFNR"], case["SCORING"]["MATNR"], part["MENGE"], part["NETPR"],
+                           part["EINDT"], reason, store=self.store, ernam=owner.id,
+                           replaces=case["EBELN"], principal=self.principal)
+        steps.append({"TOOL": "draft_po",
+                      "INPUT": {"lifnr": part["LIFNR"], "qty": part["MENGE"],
+                                "netpr": part["NETPR"], "eindt": part["EINDT"]},
+                      "RESULT": f"{drafted['RESULT']} {drafted['EBELN'] or ''}".strip()})
+        if drafted["RESULT"] != "DRAFTED":
+            return {**part, "EBELN": None, "NETWR": None, "STATUS": "NOT_DRAFTED",
+                    "RELEASE_CHECK": drafted["POLICY_DECISION"], "NEXT": NEXT_BLOCKED,
+                    "APPROVAL_REQUEST_ID": None}
+
+        po = drafted["PO"]
+        check = authorize("release_po", owner, po)          # same rule release_po applies
+        steps.append({"TOOL": "policy_check",
+                      "INPUT": {"tool": "release_po", "principal": owner.id, "ebeln": po["EBELN"]},
+                      "RESULT": "allowed" if check.allowed else f"denied by {check.policy}"})
+        order = {"EBELN": po["EBELN"], "LIFNR": po["LIFNR"], "MENGE": po["MENGE"],
+                 "NETPR": po["NETPR"], "NETWR": po["NETWR"], "EINDT": po["EINDT"],
+                 "STATUS": po["STATUS"], "RELEASE_CHECK": check.as_dict(),
+                 "APPROVAL_REQUEST_ID": None}
+        if check.allowed:
+            return {**order, "NEXT": NEXT_BUYER}
+        if check.policy != "POL-1":
+            return {**order, "NEXT": NEXT_BLOCKED}
+        submitted = submit_for_approval(po["EBELN"], store=self.store, principal=self.principal)
+        steps.append({"TOOL": "submit_for_approval", "INPUT": {"ebeln": po["EBELN"]},
+                      "RESULT": f"{submitted['RESULT']} {submitted['APPROVAL_REQUEST_ID']}"})
+        return {**order, "STATUS": self.store.get(po["EBELN"])["STATUS"],
+                "APPROVAL_REQUEST_ID": submitted["APPROVAL_REQUEST_ID"], "NEXT": NEXT_MANAGER}
+
+
+def handed_back(cases: list[dict[str, Any]]) -> bool:
+    """True while any case waits for a human: an unreleased order, or nothing to draft."""
+    return any(not c["ORDERS"] or any(o["NEXT"] != NEXT_DONE for o in c["ORDERS"])
+               for c in cases)
+
+
+def human_approvals(report: dict[str, Any], store: PoStore,
+                    approver: Principal | None = None) -> dict[str, Any]:
+    """Terminal stand-in for the human clicks: each buyer approves its one-click drafts,
+    the manager approves what was routed to it. Every release goes through policy."""
+    approver = approver or manager()
+    steps = list(report["STEPS"])
+    cases = []
+    for case in report["CASES"]:
+        orders = []
+        for order in case["ORDERS"]:
+            principal = {NEXT_BUYER: buyer(case["BUYER"]), NEXT_MANAGER: approver}.get(order["NEXT"])
+            if principal is None:
+                orders.append(order)
+                continue
+            result = release_po(order["EBELN"], store=store, principal=principal)
+            steps.append({"TOOL": "release_po",
+                          "INPUT": {"ebeln": order["EBELN"], "principal": principal.id},
+                          "RESULT": result["RESULT"]})
+            released = result["RESULT"] == STATUS_RELEASED
+            orders.append({**order, "STATUS": result["STATUS"],
+                           "NEXT": NEXT_DONE if released else order["NEXT"],
+                           "RELEASED_BY": principal.id if released else None,
+                           "RELEASE_RESULT": result["POLICY_DECISION"]})
+        cases.append({**case, "ORDERS": orders})
+    return {**report, "STEPS": steps, "CASES": cases, "HANDED_BACK": handed_back(cases)}

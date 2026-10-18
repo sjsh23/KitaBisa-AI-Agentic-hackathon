@@ -258,7 +258,7 @@ def test_cli_prints_both_agents(monkeypatch, capsys):
     assert "Replacement for PO 4500000431" in out
     main(["S1", "--no-llm", "--json"])
     data = json.loads(capsys.readouterr().out)
-    assert set(data) == {"DETECTION", "EVALUATION", "LLM_NOTES"}
+    assert set(data) == {"DETECTION", "EVALUATION", "ACTION", "POS", "LLM_NOTES"}
     main(["S1", "--no-llm", "--detect-only"])
     assert "Supplier Evaluation" not in capsys.readouterr().out
 
