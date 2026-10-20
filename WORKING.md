@@ -55,7 +55,7 @@ Milestone "5-11 Oct, core loop in terminal" (PRD section 14). The Disruption Det
 | by 5 Oct | Accounts, budget alert, BAIP request, role split | IN PROGRESS (not visible in the repository, confirm with the team) |
 | by 6 Oct | Synthetic data generator | DONE |
 | 5-11 Oct | Core loop in terminal (RPT stubbed) | IN PROGRESS, late (Detection, Supplier Evaluation and Action done locally; supervisor and its plan missing) |
-| 12-18 Oct | SAP-RPT, Gen AI Hub, AgentCore, Gateway, Policy | NOT STARTED |
+| 12-18 Oct | SAP-RPT, Gen AI Hub, AgentCore, Gateway, Policy | IN PROGRESS, late (SAP-RPT on AI Core and the Gen AI Hub models in use; orchestration, AgentCore, Gateway, Cedar Policy not started) |
 | 19-25 Oct | Integrity Guard, Monte Carlo, reliability update, Joule UI (freeze 25 Oct) | NOT STARTED |
 | 26-31 Oct | Reset script, 10x runs, backup video, deck, rehearsals | NOT STARTED |
 
@@ -88,6 +88,8 @@ Choices made inside FR-ACT-1 to FR-ACT-3 and POL-1 to POL-4 where the PRD is sil
 - No LLM text in the Action step; all values come from the evaluation and the tools.
 
 ## Done log (newest first)
+
+- 2026-10-20: PRD checked against the code; three stale passages corrected (no requirement changed): section 5 Prediction row (`sap-rpt-1.6`, was sap-rpt-1-small), section 5 Explanations row (now versus target: direct Gen AI Hub model call with masking in code, orchestration with masking and grounding still to do, FR-SEL-4, FR-SEL-5), section 14 status column. The 12-18 Oct milestone here is now IN PROGRESS to match. The other mismatches found (proposals 1 to 5, tool contract inputs in section 8, the "Evaluation agent" name) wait for the team.
 
 - 2026-10-20: SAP-RPT network retries (FR-DET-1, FR-DET-4, NFR-1, NFR-6). A run fell back to the posterior on Detection because the AI Core token request hit a `ConnectionError` (network drop); the network was back seconds later for Evaluation. `integrations/sap/rpt_client.py` now tries the token request and the predict call up to three times (waits 2 and 5 s) on a lost connection or HTTP 429 / 5xx; a read timeout is not retried (NFR-1). Retries are passed through `predict_delay_risk` (`retries`) to `PREDICTION.RETRIES` and printed after the delay risk model name. `all` ran against the real services: SAP-RPT answered all four calls, no fallback, every explanation check passed, 53 s (simulated data). `docs/testing.md` step 5 updated. 164 tests.
 

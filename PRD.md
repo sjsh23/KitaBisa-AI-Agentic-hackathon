@@ -96,8 +96,8 @@ AgentCore Memory (session state)   AgentCore Observability (traces)   Secrets Ma
 | Tools | AgentCore Gateway + Lambda (MCP) | Data access and actions |
 | Guardrails | AgentCore Policy (Cedar) | Threshold and panel rules |
 | State, audit | AgentCore Memory, AgentCore Observability, DynamoDB, S3 | Session state, traces, records |
-| Prediction | SAP-RPT-1.6 (sap-rpt-1-small) on SAP AI Core | P(late) per PO line |
-| Explanations | SAP Gen AI Hub orchestration (sap-ai-sdk-gen) | Masked, contract-grounded text for the buyer |
+| Prediction | SAP-RPT-1.6 (deployment `sap-rpt-1.6`) on SAP AI Core | P(late) per PO line |
+| Explanations | Target: SAP Gen AI Hub orchestration (sap-ai-sdk-gen) with its masking and grounding modules. Now (20 Oct): the Agent LLM above, called directly on its AI Core deployment, names masked in code, no contract grounding | Masked, contract-grounded text for the buyer (FR-SEL-4, FR-SEL-5) |
 | UI | SAP Joule (Joule Studio, needs an SAP BAIP sub-account) | Buyer and manager views, as conversations in Joule |
 | Region | us-west-2 only | Avoid forgotten resources |
 
@@ -270,11 +270,11 @@ gesit/
 | Dates | Deliverable | Status |
 |---|---|---|
 | by 5 Oct | Accounts, budget alert, BAIP request, role split | in progress |
-| by 6 Oct | Synthetic data generator | done; dataset generated on real PIHPS prices on 6 Oct (market type id to confirm, see section 17) |
-| 5-11 Oct | Core loop in terminal: disruption, scoring, explanation, draft PO (RPT stubbed) | |
-| 12-18 Oct | SAP-RPT on AI Core, Gen AI Hub, deploy to AgentCore, Gateway, Policy | |
-| 19-25 Oct | Integrity Guard, Monte Carlo eval, reliability update, Joule UI. **Freeze 25 Oct** | |
-| 26-31 Oct | Reset script, 10x runs, backup video, deck, 3 timed rehearsals in English | |
+| by 6 Oct | Synthetic data generator | done; dataset generated on real PIHPS prices on 6 Oct, regenerated 8 Oct (market type id confirmed 8 Oct) |
+| 5-11 Oct | Core loop in terminal: disruption, scoring, explanation, draft PO (RPT stubbed) | in progress, late (20 Oct): Detection, Supplier Evaluation and Action run in the terminal; the supervisor and its plan are missing |
+| 12-18 Oct | SAP-RPT on AI Core, Gen AI Hub, deploy to AgentCore, Gateway, Policy | in progress, late (20 Oct): SAP-RPT on AI Core and the Gen AI Hub models are in use; Gen AI Hub orchestration (masking, grounding), AgentCore, Gateway and Policy (Cedar) not started; policies run as local Python |
+| 19-25 Oct | Integrity Guard, Monte Carlo eval, reliability update, Joule UI. **Freeze 25 Oct** | not started (20 Oct) |
+| 26-31 Oct | Reset script, 10x runs, backup video, deck, 3 timed rehearsals in English | not started |
 
 Mentoring questions: Smartsheet on Mondays 12, 19, 26 Oct before 16:00 WIB.
 
@@ -329,3 +329,4 @@ Decided on 8 Oct 2026 (team to object by 9 Oct, otherwise these stand):
 - 2026-10-09: Agent reasoning model changed from gpt-5.4 to Gemini Flash through the Strands Gemini provider (OpenAI rate limits). Sections 5, 10, 11 (NFR-4 wording) and 17 updated; `OPENAI_API_KEY` replaced by `GEMINI_API_KEY`. No FR or POL changed.
 - 2026-10-11: S3 in `scenarios.json` now states the remainder explicitly (`remainder_kg`, `original_eindt`, `remainder_delay_days`, `remainder_eindt`; `S3_REMAINDER_DELAY_DAYS = 10` in `data_gen/config.py`, an assumption under D-4). Disruption Detection computes the S3 gap for the remainder (+5 days for 7,200 kg, simulated; FR-DET-3). No CSV changed. No requirement changed.
 - 2026-10-20: Agent reasoning model changed from Gemini Flash to GPT-5.4 on SAP Gen AI Hub (Strands OpenAI provider on the AI Core deployment), with Claude Sonnet 4.6 on the same Gen AI Hub as fallback (Strands Bedrock provider on the deployment's Converse endpoint). Sections 5, 10, 11 (NFR-4 wording), 15 and 17 updated; the Gemini access path decision closed; `GEMINI_API_KEY` no longer used. Reason: Gemini free-tier quota and overloads. No FR or POL changed.
+- 2026-10-20: Corrected stale text against the code: section 5 Prediction row names the `sap-rpt-1.6` deployment (was sap-rpt-1-small); section 5 Explanations row says what runs now (Gen AI Hub model called directly, masking in code, no grounding) and what is the target (orchestration); section 14 status column filled in (market type id confirmed 8 Oct, milestone status as of 20 Oct). No requirement changed.
