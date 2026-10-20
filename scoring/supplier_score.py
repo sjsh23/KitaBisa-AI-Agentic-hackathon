@@ -225,11 +225,19 @@ def score_candidates(quotes: dict[str, dict[str, Any]], qty: float, p_late: dict
     return rank(rows)
 
 
+def cheapest_key(row: dict[str, Any]) -> tuple[float, float, float, str]:
+    """Which new order is "cheapest": lowest NETPR; on an equal price fewer expected
+    stock-out days, then more spare capacity, then the lower LIFNR (FR-SEL-3)."""
+    return (row["NETPR"], row["EXPECTED_STOCKOUT_DAYS"], -(row["AVAILABLE_KG"] or 0.0),
+            row["LIFNR"])
+
+
 def rank(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Sort by expected cost, then add RANK, SCORE, IS_CHEAPEST and IS_FASTEST.
 
     On equal expected cost keeping the current PO goes first (no new order needed).
-    Cheapest and fastest are marked among the new orders only.
+    Cheapest and fastest are marked among the new orders only; `cheapest_key` breaks
+    a tie in price, so the label never depends on the order the quotes came in.
     """
     rows = sorted(({"OPTION": OPTION_NEW_PO, **r} for r in rows),
                   key=lambda r: (r["EXPECTED_COST"], r["OPTION"] != OPTION_KEEP, r["NETPR"],
@@ -238,8 +246,8 @@ def rank(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return rows
     lowest = rows[0]["EXPECTED_COST"]
     new = [i for i, r in enumerate(rows) if r["OPTION"] == OPTION_NEW_PO]
-    # min() keeps the first of equal values, so ties go to the better rank.
-    cheapest = min(new, key=lambda i: rows[i]["NETPR"], default=None)
+    cheapest = min(new, key=lambda i: cheapest_key(rows[i]), default=None)
+    # min() keeps the first of equal values, so a tie in lead time goes to the better rank.
     fastest = min(new, key=lambda i: rows[i]["LEAD_DAYS"], default=None)
     return [
         {"RANK": i + 1, **row,

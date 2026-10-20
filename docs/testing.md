@@ -108,15 +108,19 @@ Expected detection part (simulated data):
 Stock 19,800 kg, 6.0 days of cover, stock-out date 2026-10-06
 Delay risk model: beta-posterior-fallback (FALLBACK, SAP-RPT credentials are not configured)
 ...
-EBELN      LIFNR    MENGE kg  EINDT       P(late)  ARRIVAL     GAP  FLAG
-4500000430 100107      6,500  2026-10-02     0.30  2026-10-02   -4  -
-4500000431 100101     10,000  2026-10-04     0.44  2026-10-11   +5  delay notice, 7 days, new date 2026-10-11
-4500000432 100103      8,000  2026-10-03     0.16  2026-10-03   -3  -
-4500000433 100104     12,000  2026-10-01     0.21  2026-10-01   -5  -
-4500000434 100110      3,000  2026-10-05     0.32  2026-10-05   -1  -
+EBELN      LIFNR    MENGE kg  EINDT       P(late)  ARRIVAL                  GAP  FLAG
+4500000430 100107      6,500  2026-10-02     0.30  2026-10-02                -4  -
+4500000431 100101     10,000  2026-10-04     0.44  2026-10-11                +5  delay notice, 7 days, new date 2026-10-11
+4500000432 100103      8,000  2026-10-03     0.16  2026-10-03                -3  price revision +5.9% (Rp17,650 to Rp18,700 per kg)
+4500000433 100104     12,000  2026-10-01     0.21  2026-10-01 / 2026-10-11   +5  capacity shortfall, ...
+4500000434 100110      3,000  2026-10-05     0.32  2026-10-05                -1  -
 ...
-Flagged, most urgent first: 4500000431
+Flagged, most urgent first: 4500000431, 4500000433, 4500000432
 ```
+
+One world (since 20 Oct): S1, S2, S3 and `all` all see every notice on file, so Detection
+flags the same three POs in each. The scenario only picks which case Supplier Evaluation
+and Action show. A case's table is then the same alone or in `all`.
 
 Below the table the GAP line reads "-3 = arrives 3 days before stock runs out, +5 = arrives
 5 days after (too late)". The model's assessment gets the gap in words only
@@ -125,22 +129,22 @@ number, so it should never write "-3 days after stock runs out".
 
 Then the other triggers:
 
-| Command | Expected flagged POs |
-|---|---|
-| `py -3.11 -m agents.run scan --no-llm` | none (no fallback P(late) reaches 0.5) |
-| `py -3.11 -m agents.run S2 --no-llm` | 4500000432, price revision +5.9% (Rp17,650 to Rp18,700 per kg) |
-| `py -3.11 -m agents.run S3 --no-llm` | 4500000433, capacity shortfall, 4,800 of 12,000 kg deliverable on 2026-10-01, 7,200 kg on 2026-10-11 (5 days after stock runs out) |
-| `py -3.11 -m agents.run all --no-llm` | 4500000431, 4500000433, 4500000432, in that order |
+| Command | Expected flagged POs | Case shown |
+|---|---|---|
+| `py -3.11 -m agents.run scan --no-llm` | none (no notices, no fallback P(late) reaches 0.5) | none |
+| `py -3.11 -m agents.run S2 --no-llm` | 4500000431, 4500000433, 4500000432 | 4500000432, price revision +5.9% (Rp17,650 to Rp18,700 per kg) |
+| `py -3.11 -m agents.run S3 --no-llm` | 4500000431, 4500000433, 4500000432 | 4500000433, capacity shortfall, 4,800 of 12,000 kg deliverable on 2026-10-01, 7,200 kg on 2026-10-11 (5 days after stock runs out) |
+| `py -3.11 -m agents.run all --no-llm` | 4500000431, 4500000433, 4500000432, in that order | all three |
 
 Then the supplier evaluation part (simulated data, posterior fallback, so the
 numbers differ from a run with the real SAP-RPT):
 
 | Command | Replacement case(s) | #1 | Cheapest | Fastest |
 |---|---|---|---|---|
-| `S1` | 4500000431, 10,000 kg | 100109, expected cost Rp179,397,321 | 100103 | 100109 |
-| `S2` | 4500000432, 8,000 kg | 100109, Rp144,297,321 | 100101 | 100109 |
-| `S3` | 4500000433, 7,200 kg (the late remainder only) | 100109, Rp130,257,321 | 100101 | 100109 |
-| `all` | 4500000431, then 4500000433, then 4500000432 | 100109; 100109 split (2,500 kg, plus 4,700 kg from 100102); keep PO 4500000432 (Rp149,600,000) | 100105 | 100109, 100109, 100102 |
+| `S1` | 4500000431, 10,000 kg | 100109, expected cost Rp179,397,321 | 100105 | 100109 |
+| `S2` | 4500000432, 8,000 kg | keep PO 4500000432, Rp149,600,000 | 100105 | 100102 |
+| `S3` | 4500000433, 7,200 kg (the late remainder only) | 100109 split (2,500 kg, plus 4,700 kg from 100102), Rp150,504,554 | 100105 | 100109 |
+| `all` | 4500000431, then 4500000433, then 4500000432 | the three rows above, identical | 100105 | 100109, 100109, 100102 |
 
 Every table also ranks keeping the flagged PO as it is (NOTE "keep PO ... as it is, no new
 order", SPARE "-"): its own price (the revised Rp18,700 in S2), its expected arrival and its
@@ -149,9 +153,8 @@ own P(late). Proposed rule, `docs/prd_change_proposals.md` item 4.
 | Command | Keep row | Rank |
 |---|---|---|
 | `S1` | 100101, arrives 2026-10-11 (5 days after stock runs out), Rp1,225,740,580 | last |
-| `S2` | 100103, Rp18,700, arrives 2026-10-03, no risk cost, Rp149,600,000 | 2nd, Rp5,302,679 above 100109 |
-| `S3` | 100104, remainder arrives 2026-10-11, Rp958,761,429 | last |
-| `all`, case 4500000432 | 100103, Rp149,600,000 | 1st: 100109's spare kilograms went to the earlier cases |
+| `S2` | 100103, Rp18,700, arrives 2026-10-03, no risk cost, Rp149,600,000 | 1st: 100109's spare kilograms went to the more urgent POs |
+| `S3` | 100104, the 7,200 kg remainder arrives 2026-10-11, Rp958,761,429 | last |
 
 What to check in every table:
 
@@ -159,18 +162,24 @@ What to check in every table:
   (proposal in `docs/prd_change_proposals.md`). `$env:GESIT_EXCLUDE_FLAGGED_SUPPLIERS = "false"`
   switches it off; then S2 lists 100103 as a candidate,
 - the excluded list names 100111 as "off the approved panel" (FR-SEL-1, POL-2),
-  100104 and 100110 as "no spare capacity" (unless excluded for a flagged PO), and
-  the supplier of every flagged PO as "has a flagged PO in this run, so no new order from it
-  (EXCLUDE_FLAGGED_SUPPLIERS)" (its keep row is still ranked),
+  100110 as "no spare capacity", and 100101, 100103 and 100104 (the suppliers of the three
+  flagged POs) as "has a PO flagged by Detection, so no new order from it
+  (EXCLUDE_FLAGGED_SUPPLIERS)" (the case's own keep row is still ranked),
 - rows are sorted by EXPECTED, and EXPECTED = PURCHASE + RISK on every row,
 - "cheapest new order" and "fastest new order" never point at the keep row,
 - the SPARE kg column is never below the kilograms a row is ranked for. A row with
   less spare capacity than needed says "cannot cover full quantity: split ... kg here +
   ... kg from ...", and the two parts add up to the needed quantity,
 - in S1, 100109 has 12,500 kg spare and covers all 10,000 kg without a split,
-- in `all`, the second case prints "Spare capacity already given to an earlier case in this
-  run: 100109 10,000 kg", so 100109 has 2,500 kg left and is split. This is the reason
-  100109 looks different in S1 and in `all`; it is not a bug (see `docs/prd_change_proposals.md`).
+- every table ends with "Capacity rule: spare capacity goes to the flagged POs in Detection's
+  urgency order (4500000431, 4500000433, 4500000432), whichever cases a run shows", then
+  "Reserved for more urgent POs: ..." and "Cheapest tie-break: on an equal NETPR, fewer OUT d
+  first, then more SPARE kg, then the lower LIFNR",
+- S3 alone prints "Reserved for more urgent POs: 100109 10,000 kg (PO 4500000431)", so 100109
+  has 2,500 kg left and is split, exactly as in `all`. S3 alone scores the S1 case first, only
+  to reserve its capacity (Evaluation step "scored only to reserve its capacity"),
+- the S1 table is the same in `agents.run all` and `agents.integrity S1` (compare the lines
+  from "Replacement for PO 4500000431" to "Recommended:").
 
 Then the action part, `GESIT Action` (FR-ACT-1 to FR-ACT-3, POL-1 to POL-4; simulated data,
 posterior fallback). The agent drafts a PO for every #1 (one per supplier for a split),
@@ -180,8 +189,8 @@ releases a PO itself.
 | Command | Draft(s) | NETWR | What happens next |
 |---|---|---|---|
 | `S1` | 4500000435, 100109, 10,000 kg | Rp175,500,000 | release by BUYER01 denied by POL-1, submitted as APR-4500000435, waiting for the manager |
-| `S2` | 4500000435, 100109, 8,000 kg | Rp140,400,000 | within policy, waiting for BUYER02's one-click approval |
-| `S3` | 4500000435, 100109, 7,200 kg | Rp126,360,000 | within policy, waiting for BUYER04's one-click approval |
+| `S2` | nothing (keeping 4500000432 ranks #1) | none | "keeping the current PO ranks #1, nothing drafted; handed back to the buyer" |
+| `S3` | 4500000435 and 4500000436 (the 100109 and 100102 split) | Rp43,875,000 and Rp86,480,000 | within policy, waiting for BUYER04's one-click approval |
 | `all` | 4500000435 (as S1); 4500000436 and 4500000437 (the 100109 and 100102 split for 4500000433); nothing for 4500000432 | Rp175,500,000; Rp43,875,000 and Rp86,480,000 | manager for the first, buyer one-click for the split; 4500000432 says "keeping the current PO ranks #1, nothing drafted" |
 
 Under every case a line says what happens to the old PO (proposal item 5). GESIT does not
@@ -190,9 +199,8 @@ change it; the buyer does it in S/4:
 | Command | Old PO line starts with |
 |---|---|
 | `S1` | "Old PO 4500000431: cancel its 10,000 kg once the replacement is released (it would arrive 2026-10-11, 5 days after stock runs out)" |
-| `S2` | "Old PO 4500000432: cancel its 8,000 kg ... (supplier 100103 now asks Rp18,700 per kg instead of Rp17,650)" |
+| `S2` (and `all`, case 4500000432) | "Old PO 4500000432: keep it as it is, expected cost Rp149,600,000 against ... for the best new order" |
 | `S3` | "Old PO 4500000433: reduce from 12,000 to 4,800 kg (the part arriving 2026-10-01)" |
-| `all`, case 4500000432 | "Old PO 4500000432: keep it as it is, expected cost Rp149,600,000 against Rp167,349,554 for the best new order, from 100102 (simulated)" |
 
 What to check:
 
@@ -204,7 +212,7 @@ What to check:
 
 Add `--approve` to simulate the human clicks: the manager (MANAGER01) releases what was
 routed to it and each buyer releases its own drafts. Every order then says
-"Released by ...". The last line says "Handed back to a human: no" for S1, S2 and S3; in
+"Released by ...". The last line says "Handed back to a human: no" for S1 and S3; in S2 and
 `all` it stays "yes", because the buyer still has to accept the revised price on 4500000432.
 
 Run the same command twice and compare: the output must be identical (NFR-2).

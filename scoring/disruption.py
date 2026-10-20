@@ -121,3 +121,10 @@ def evaluate_po(
         "GAP_DAYS": gap,
         "ARRIVAL_VS_STOCKOUT": timing,
     }
+
+
+def urgency_key(po: dict[str, Any]) -> tuple[float, float, str]:
+    """Sort key for flagged POs, most urgent first: largest gap after the stock-out date,
+    then highest delay risk, then EBELN. Detection orders its flags by it, and Supplier
+    Evaluation hands out spare capacity in the same fixed order (FR-SEL-2)."""
+    return (-po["GAP_DAYS"], -(po["P_LATE"] or 0.0), po["EBELN"])

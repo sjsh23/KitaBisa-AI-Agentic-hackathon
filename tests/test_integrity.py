@@ -12,7 +12,7 @@ from agents import integrity as integrity_cli
 from agents.action import ActionAgent
 from agents.detection import DetectionAgent
 from agents.evaluation import EvaluationAgent
-from agents.run import notices_for
+from agents.run import cases_for, notices_on_file
 from integrations.sap.rpt_client import RptClient
 from scoring import integrity
 from tools import check_override, get_integrity_flags, record_override
@@ -57,9 +57,9 @@ def adapter():
 def s1(adapter):
     rpt = StubRpt()
     detection = DetectionAgent(adapter=adapter, rpt_client=rpt, reasoner=lambda f: "ok").detect(
-        MATNR, notices_for("S1", adapter.scenarios()))
-    return EvaluationAgent(adapter=adapter, rpt_client=rpt,
-                           explainer=lambda f: "ok").evaluate(detection)
+        MATNR, notices_on_file("S1", adapter.scenarios()))
+    return EvaluationAgent(adapter=adapter, rpt_client=rpt, explainer=lambda f: "ok").evaluate(
+        detection, detection["FLAGGED_POS"], cases_for("S1", adapter.scenarios()))
 
 
 @pytest.fixture
@@ -209,12 +209,12 @@ def test_action_keep_choice_drafts_nothing(adapter, s1, case):
 
 def test_get_integrity_flags_counts_overrides(adapter, case):
     record_override(case["EBELN"], "100109", "100108", GOOD_REASON, case=case, buyer="BUYER03")
-    record_override(case["EBELN"], "100109", "100103", GOOD_REASON, case=case, buyer="BUYER01")
+    record_override(case["EBELN"], "100109", "100105", GOOD_REASON, case=case, buyer="BUYER01")
     flags = get_integrity_flags(adapter=adapter)
     assert (flags["PAIRS_TESTED"], flags["PAIRS_FLAGGED"]) == (40, 1)
     assert flags["FLAGS"][0]["BUYER"] == "BUYER03" and flags["FLAGS"][0]["OVERRIDE_COUNT"] == 1
     assert flags["OVERRIDES_BY_BUYER"] == {"BUYER01": 1, "BUYER03": 1}
-    assert flags["OVERRIDES_BY_CHOSEN"] == {"100103": 1, "100108": 1}
+    assert flags["OVERRIDES_BY_CHOSEN"] == {"100105": 1, "100108": 1}
     assert read_overrides()[1]["OVERRIDE_ID"] == "OVR-4500000431-002"
 
 

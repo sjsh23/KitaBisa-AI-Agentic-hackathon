@@ -217,3 +217,23 @@ def test_keep_goes_first_on_equal_expected_cost():
     rows = ss.score_candidates({"A": quote("A", 17_550, 3)}, 1_000, {"A": 0.0}, {"A": 0.0},
                                TODAY, STOCKOUT, DOWNTIME, keep=keep)
     assert rows[0]["OPTION"] == ss.OPTION_KEEP and rows[0]["EXPECTED_COST"] == rows[1]["EXPECTED_COST"]
+
+
+def _cheapest(quotes, p_late):
+    rows = ss.score_candidates(quotes, 5_000, p_late, {k: 3.0 for k in quotes}, TODAY, STOCKOUT,
+                               DOWNTIME)
+    return next(r["LIFNR"] for r in rows if r["IS_CHEAPEST"])
+
+
+def test_cheapest_tie_break_on_equal_price():
+    # Equal NETPR: fewer expected stock-out days, then more spare kg, then the lower LIFNR,
+    # whatever order the quotes come in.
+    a, b = quote("100103", 17_450, 4), quote("100105", 17_450, 5)
+    for quotes in ({"100103": a, "100105": b}, {"100105": b, "100103": a}):
+        assert _cheapest(quotes, {"100103": 0.2, "100105": 0.2}) == "100103"   # 0.2 vs 0.4 days
+    a, b = quote("100103", 17_450, 3, available=20_000.0), quote("100105", 17_450, 3)
+    for quotes in ({"100103": a, "100105": b}, {"100105": b, "100103": a}):
+        assert _cheapest(quotes, {"100103": 0.0, "100105": 0.0}) == "100105"   # 50,000 kg spare
+    a, b = quote("100103", 17_450, 3), quote("100105", 17_450, 3)
+    for quotes in ({"100103": a, "100105": b}, {"100105": b, "100103": a}):
+        assert _cheapest(quotes, {"100103": 0.0, "100105": 0.0}) == "100103"   # lower LIFNR

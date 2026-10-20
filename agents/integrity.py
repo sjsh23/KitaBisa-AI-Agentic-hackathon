@@ -24,7 +24,8 @@ from adapters import default_adapter
 from agents.action import ActionAgent
 from agents.detection import DetectionAgent
 from agents.evaluation import EvaluationAgent
-from agents.run import DEFAULT_MATNR, format_action, format_case, notices_for
+from agents.run import (DEFAULT_MATNR, cases_for, format_action, format_case,
+                        notices_on_file)
 from integrations.sap.rpt_client import RptClient
 from scoring import integrity
 from tools import get_integrity_flags
@@ -99,10 +100,17 @@ def main(argv: list[str] | None = None) -> int:
 
     adapter = default_adapter()
     rpt_client = RptClient()
+    # Same path as agents.run: all notices on file, the full flagged list into Evaluation,
+    # so the table here is the one agents.run prints for this case.
     detection = DetectionAgent(adapter=adapter, rpt_client=rpt_client).detect(
-        args.matnr, notices_for(args.scenario, adapter.scenarios()))
-    evaluation = EvaluationAgent(adapter=adapter, rpt_client=rpt_client).evaluate(detection)
-    cases = [c for c in evaluation["CASES"] if args.ebeln in (None, c["EBELN"])]
+        args.matnr, notices_on_file(args.scenario, adapter.scenarios()))
+    shown = [args.ebeln] if args.ebeln else cases_for(args.scenario, adapter.scenarios())
+    if shown and not set(shown) <= set(detection["FLAGGED_EBELN"]):
+        print(f"PO {', '.join(shown)} is not flagged, nothing to choose.")
+        return 0
+    evaluation = EvaluationAgent(adapter=adapter, rpt_client=rpt_client).evaluate(
+        detection, detection["FLAGGED_POS"], shown)
+    cases = evaluation["CASES"]
     if not cases:
         print("No flagged PO to act on, nothing to choose.")
         return 0

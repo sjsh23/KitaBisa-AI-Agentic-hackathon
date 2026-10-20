@@ -267,6 +267,47 @@ human when policy denies an action."
   `./decision_log.jsonl`, gitignored) until DynamoDB is set up (PRD section 5), with the same
   function signatures.
 
+## 9. Proposed PRD change: one world for the demo scenarios (FR-DET-2, FR-SEL-1 to FR-SEL-3, section 12)
+
+**Status:** built on 20 Oct 2026 after a review note (the S1 table differed between
+`agents.integrity S1` and `agents.run all`); the user chose this option. Waiting for the team.
+
+**What was wrong.** Detection for trigger S1 saw only the S1 notice, so it flagged only
+4500000431. In S1 alone, 100103 (PO 4500000432, P(late) 0.20, no notice) was a valid backup
+and was marked "cheapest" (Rp195,467,857 expected, simulated). In `all`, the S2 notice flags
+4500000432, so 100103 is excluded and the cheapest is 100105 (Rp258,401,099, simulated). Same
+case, two tables.
+
+**Rule now.**
+- S1, S2, S3 and `all` all see every notice on file (`agents.run.notices_on_file`), so
+  Detection flags 4500000431, 4500000433 and 4500000432 in each. FR-DET-1 and FR-DET-2 already
+  ask for every open PO to be checked; a real system would know every notice on file whatever
+  woke it up. `scan` still has no notices.
+- The scenario only picks the case shown and drafted (`agents.run.cases_for`).
+- Supplier Evaluation needs Detection's full flagged list as an explicit argument and fails
+  with a clear error without it, or when a flagged PO is missing from it.
+- Spare capacity goes to the flagged POs in Detection's urgency order (largest gap after the
+  stock-out date, then P(late), then EBELN: 4500000431, 4500000433, 4500000432). For a later
+  case the more urgent ones are scored first, only to reserve their capacity. Printed under
+  every table.
+- Cheapest tie-break on an equal NETPR: fewer expected stock-out days, then more spare
+  capacity, then the lower LIFNR (100103 and 100105 both quote Rp17,450). Printed under every
+  table.
+
+**What changes for the demo (simulated data).**
+- S1: same #1 (100109); 100103 excluded; cheapest now 100105.
+- S2 alone now recommends keeping PO 4500000432 (Rp149,600,000), as `all` already did, because
+  100109's spare capacity goes to S1 first. Nothing is drafted for S2. This drops the S2 story
+  "replace the supplier that raised its price" from section 12 unless the team prefers another
+  rule.
+- S3 alone now has 100109 with 2,500 kg left (10,000 kg reserved for S1).
+
+**Proposed PRD text.** Add to FR-DET-2: "Every open PO is checked against every notice on file,
+whatever the trigger." Add to FR-SEL-2: "When several POs are flagged, spare capacity is given
+to them in Detection's urgency order; a case's ranked table does not depend on which cases
+are shown." Add to FR-SEL-3: "On an equal price, cheapest goes to fewer expected stock-out
+days, then more spare capacity, then the lower LIFNR."
+
 ## PRD Changelog draft
 
 Lines to add to the Changelog at the end of `PRD.md` once the team agrees:
@@ -278,3 +319,4 @@ Lines to add to the Changelog at the end of `PRD.md` once the team agrees:
 - 2026-10-20: Section 8: tool inputs and outputs brought in line with the code: `get_supplier_history` today?; `predict_delay_risk` returns the fallback reason and network retries; `score_suppliers` takes today?, exclude_lifnr?, reserved_kg?, current_po?; `draft_po` takes ernam, replaces?, bedat?; `submit_for_approval` and `release_po` use the caller identity from the Gateway (POL-1, POL-4).
 - 2026-10-20: FR-SUP-2 names Supplier Evaluation and Evaluation and Learning apart; the code's Supplier Evaluation agent is renamed `agents/supplier_evaluation.py` (option A) or the FR-EVA agent becomes the Learning agent (option B).
 - 2026-10-20: FR-INT-1: the justification rule also applies to choosing or leaving "keep the current PO"; only ranked options can be chosen. FR-INT-3: share_others = 0 counts as meeting the ratio rule; every buyer and supplier pair in EKKO counts as one test (40 on the current data, 1 flagged, simulated). Section 8: `record_override` also takes the Evaluation case and the buyer; `get_integrity_flags` returns the number of pairs tested and override counts.
+- 2026-10-20: FR-DET-2, FR-SEL-1 to FR-SEL-3: one world for the demo scenarios: every run sees every notice on file and the scenario only picks the case shown; Evaluation takes Detection's full flagged list; spare capacity goes to flagged POs in Detection's urgency order; cheapest tie-break on equal price (fewer expected stock-out days, more spare capacity, lower LIFNR). S2 alone now recommends keeping PO 4500000432 (simulated).

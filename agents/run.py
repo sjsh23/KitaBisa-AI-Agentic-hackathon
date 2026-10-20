@@ -11,6 +11,10 @@
 Disruption Detection (FR-DET) runs first, then Supplier Evaluation (FR-SEL) for
 every flagged PO, then Action (FR-ACT): a draft PO for each #1, routed by policy.
 The supervisor comes later.
+
+One world: S1, S2 and S3 all see every notice on file, so Detection flags the same
+POs in each; the scenario only picks which case is shown and drafted. A case's
+table is then the same alone or in `all`.
 """
 from __future__ import annotations
 
@@ -31,7 +35,7 @@ REASON_LABELS = {"PREDICTED_LATE": "predicted late", "DELAY_NOTICE": "delay noti
                  "PRICE_INCREASE": "price increase", "CAPACITY_SHORTFALL": "capacity shortfall"}
 EXCLUDED_LABELS = {"OFF_PANEL": "off the approved panel", "QUOTE_NOT_VALID": "quote not valid today",
                    "NO_SPARE_CAPACITY": "no spare capacity",
-                   "DISRUPTED_SUPPLIER": "has a flagged PO in this run, so no new order from it "
+                   "DISRUPTED_SUPPLIER": "has a PO flagged by Detection, so no new order from it "
                                          "(EXCLUDE_FLAGGED_SUPPLIERS)"}
 
 
@@ -46,6 +50,21 @@ def notices_for(scenario: str, scenarios: list[dict[str, Any]]) -> list[dict[str
     if not found:
         raise SystemExit(f"unknown scenario '{scenario}', use S1, S2, S3, scan or all")
     return found
+
+
+def notices_on_file(scenario: str, scenarios: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The notices Detection sees: all of them on file for S1, S2, S3 and `all` (one world,
+    every open PO checked against every notice, FR-DET-1, FR-DET-2); none for `scan`."""
+    notices_for(scenario, scenarios)   # rejects an unknown scenario id
+    return [] if scenario.upper() == "SCAN" else list(scenarios)
+
+
+def cases_for(scenario: str, scenarios: list[dict[str, Any]]) -> list[str] | None:
+    """EBELNs whose case a scenario shows: the scenario's own PO, or None (all) for
+    `all` and `scan`. Evaluation still scores against the full flagged list."""
+    if scenario.upper() in ("ALL", "SCAN"):
+        return None
+    return [n["ebeln"] for n in notices_for(scenario, scenarios)]
 
 
 def _reason_text(reason: dict[str, Any]) -> str:
@@ -150,9 +169,6 @@ def format_case(case: dict[str, Any]) -> list[str]:
         f"{case['QTY']:,.0f} kg, needed by {case['NEED_BY']} (stock-out date)",
         delay_model_text(pred),
     ]
-    if table["RESERVED_KG"]:
-        lines.append("Spare capacity already given to an earlier case in this run: "
-                     + ", ".join(f"{lifnr} {kg:,.0f} kg" for lifnr, kg in table["RESERVED_KG"].items()))
     lines += [
         "",
         f"{'RANK':>4}  {'LIFNR':<8}{'SPARE kg':>9}{'NETPR':>7}{'LEAD':>5}  {'ARRIVAL':<11}"
@@ -179,8 +195,13 @@ def format_case(case: dict[str, Any]) -> list[str]:
         f"EXPECTED = PURCHASE + OUT d x Rp{table['DOWNTIME_COST_PER_DAY']:,} per day of "
         f"downtime (RISK).",
     ]
+    lines += capacity_rule_text(case)
+    lines.append("Cheapest tie-break: on an equal NETPR, fewer OUT d first, then more SPARE kg, "
+                 "then the lower LIFNR.")
     if table.get("KEEP"):
-        lines.append(f"Keep row = PO {case['EBELN']} as it stands: its price (the revised one "
+        kept = (f"the {table['KEEP']['MENGE']:,.0f} kg remainder on PO {case['EBELN']}"
+                if "CAPACITY_SHORTFALL" in case["REASON_CODES"] else f"PO {case['EBELN']}")
+        lines.append(f"Keep row = {kept} as it stands: its price (the revised one "
                      "after a price increase), its expected arrival and its own P(late).")
     best = table["RECOMMENDED"] or "none"
     if table.get("RECOMMENDED_OPTION") == supplier_score.OPTION_KEEP:
@@ -196,12 +217,27 @@ def format_case(case: dict[str, Any]) -> list[str]:
     return lines
 
 
+def capacity_rule_text(case: dict[str, Any]) -> list[str]:
+    """Footer lines: the fixed order spare capacity is handed out in, and what this case lost."""
+    order = case.get("URGENCY_ORDER") or [case["EBELN"]]
+    taken = case.get("RESERVED_FOR") or []
+    return [
+        "Capacity rule: spare capacity goes to the flagged POs in Detection's urgency order ("
+        + ", ".join(order) + "), whichever cases a run shows; SPARE is what is left after the "
+        "more urgent ones.",
+        "Reserved for more urgent POs: " + ("; ".join(
+            f"{t['LIFNR']} {t['KG']:,.0f} kg (PO {t['EBELN']})" for t in taken) or "none"),
+    ]
+
+
 def format_evaluation(report: dict[str, Any]) -> str:
     """Plain-text view of a supplier evaluation report."""
     lines = [f"GESIT Supplier Evaluation ({report['DATA_NOTE']})",
              f"Material {report['MATNR']}, today {report['TODAY']}",
              f"EXCLUDE_FLAGGED_SUPPLIERS: {report['EXCLUDE_FLAGGED_SUPPLIERS']} "
-             "(proposed rule, see docs/prd_change_proposals.md)"]
+             "(proposed rule, see docs/prd_change_proposals.md)",
+             "Flagged POs, most urgent first: " + (", ".join(report["FLAGGED_EBELN"]) or "none")
+             + "; cases shown: " + (", ".join(report["SHOWN_EBELN"]) or "none")]
     settings = report.get("EXPLANATION_SETTINGS")
     if settings:
         fallback = ", ".join(settings["FALLBACK_MODELS"]) or "none"
@@ -282,7 +318,7 @@ def main(argv: list[str] | None = None) -> None:
     adapter = default_adapter()
     rpt_client = RptClient()   # one client, so the AI Core token is fetched once
     detector = DetectionAgent(adapter=adapter, rpt_client=rpt_client)
-    notices = notices_for(args.scenario, adapter.scenarios())
+    notices = notices_on_file(args.scenario, adapter.scenarios())   # one world: all on file
     report = (detector.detect(args.matnr, notices) if args.no_llm
               else detector.run(args.matnr, notices))
     if args.detect_only:
@@ -290,8 +326,11 @@ def main(argv: list[str] | None = None) -> None:
               else format_report(report) + quota_text(llm_notes()))
         return
 
+    # The full flagged list decides exclusions and capacity; the scenario picks the cases shown.
     evaluator = EvaluationAgent(adapter=adapter, rpt_client=rpt_client)
-    evaluation = evaluator.evaluate(report) if args.no_llm else evaluator.run(report)
+    shown = cases_for(args.scenario, adapter.scenarios())
+    evaluation = (evaluator.evaluate(report, report["FLAGGED_POS"], shown) if args.no_llm
+                  else evaluator.run(report, report["FLAGGED_POS"], shown))
 
     actor = ActionAgent(adapter=adapter)   # in-memory PO store: every run starts clean (NFR-2)
     actions = actor.act(evaluation)

@@ -130,14 +130,45 @@ def is_keep(row: dict[str, Any]) -> bool:
     return row.get("OPTION") == supplier_score.OPTION_KEEP
 
 
-def reserve(reserved: dict[str, float], table: dict[str, Any]) -> None:
-    """Add the recommended order (both parts of a split) to the capacity reservations."""
+def reserve(reserved: dict[str, float], table: dict[str, Any], ebeln: str,
+            reserved_for: list[dict[str, Any]]) -> None:
+    """Add the recommended order (both parts of a split) to the capacity reservations,
+    and note which flagged PO they are for."""
     if not table["CANDIDATES"] or is_keep(table["CANDIDATES"][0]):
         return   # keeping the current PO takes no backup supplier's spare capacity
     best = table["CANDIDATES"][0]
     for part in (best, best["SPLIT_WITH"]):
         if part:
             reserved[part["LIFNR"]] = reserved.get(part["LIFNR"], 0.0) + part["MENGE"]
+            reserved_for.append({"EBELN": ebeln, "LIFNR": part["LIFNR"], "KG": part["MENGE"]})
+
+
+class FlaggedListMissing(ValueError):
+    """Evaluation was called without Detection's full list of flagged POs."""
+
+
+def check_flagged(detection: dict[str, Any], flagged_pos: list[dict[str, Any]] | None,
+                  cases: list[str] | None) -> list[dict[str, Any]]:
+    """The flagged POs in Detection's urgency order, or a clear error.
+
+    Which suppliers are excluded and which spare capacity is already taken must not
+    depend on which cases a caller wants to see, so the full flagged list is required.
+    """
+    if flagged_pos is None:
+        raise FlaggedListMissing(
+            "Supplier Evaluation needs the full list of flagged POs from Disruption Detection "
+            "(detection['FLAGGED_POS']); pass it as flagged_pos, and use cases= to pick the "
+            "cases to show.")
+    given = {po["EBELN"] for po in flagged_pos}
+    missing = [e for e in detection["FLAGGED_EBELN"] if e not in given]
+    if missing:
+        raise FlaggedListMissing(
+            f"flagged_pos is missing POs that Disruption Detection flagged: {', '.join(missing)}. "
+            "Pass all of detection['FLAGGED_POS'], not only the cases to show.")
+    unknown = [e for e in (cases or []) if e not in given]
+    if unknown:
+        raise ValueError(f"cases {', '.join(unknown)} are not flagged POs")
+    return sorted(flagged_pos, key=disruption.urgency_key)
 
 
 class EvaluationAgent:
@@ -153,25 +184,37 @@ class EvaluationAgent:
                                 else exclude_flagged)
 
     # ------------------------------------------------------------ step 1
-    def evaluate(self, detection: dict[str, Any]) -> dict[str, Any]:
-        """Deterministic ranked tables, one case per flagged PO, most urgent first."""
+    def evaluate(self, detection: dict[str, Any], flagged_pos: list[dict[str, Any]] | None = None,
+                 cases: list[str] | None = None) -> dict[str, Any]:
+        """Deterministic ranked tables for the flagged POs, most urgent first.
+
+        `flagged_pos` must be Detection's full list (detection["FLAGGED_POS"]), whatever
+        `cases` (EBELNs, default all) the caller shows. Spare capacity is handed out in
+        the fixed urgency order, so a case gets the same table alone or with the others:
+        for a later case the more urgent ones are scored first, only to reserve theirs.
+        """
+        flagged = check_flagged(detection, flagged_pos, cases)
+        shown = [po["EBELN"] for po in flagged] if cases is None else list(cases)
         matnr, need_by = detection["MATNR"], detection["INVENTORY"]["STOCKOUT_DATE"]
+        order = [po["EBELN"] for po in flagged]
         # EXCLUDE_FLAGGED_SUPPLIERS: suppliers with a flagged PO right now are not backups.
-        disrupted = (sorted({po["LIFNR"] for po in detection["FLAGGED_POS"]})
-                     if self.exclude_flagged else [])
+        disrupted = sorted({po["LIFNR"] for po in flagged}) if self.exclude_flagged else []
         # Cases are scored most urgent first; each #1 reserves its supplier's spare
         # capacity, so a later case cannot count on the same kilograms.
         reserved: dict[str, float] = {}
-        steps, cases = [], []
-        for po in detection["FLAGGED_POS"]:
+        reserved_for: list[dict[str, Any]] = []
+        last = max((order.index(e) for e in shown), default=-1)
+        steps, out = [], []
+        for po in flagged[:last + 1]:   # nothing after the last case shown can change it
             qty = replacement_qty(po)
             current = current_po_terms(po)
             keep_input = {k: current[k] for k in ("EBELN", "LIFNR", "NETPR", "ARRIVAL", "P_LATE")}
+            before = list(reserved_for)
             table = score_suppliers(matnr, qty, need_by, exclude_lifnr=disrupted,
                                     today=detection["TODAY"], reserved_kg=reserved,
                                     adapter=self.adapter, client=self.rpt_client,
                                     current_po=keep_input)
-            reserve(reserved, table)
+            reserve(reserved, table, po["EBELN"], reserved_for)
             best = (f"keep PO {po['EBELN']}" if table["RECOMMENDED_OPTION"] == supplier_score.OPTION_KEEP
                     else table["RECOMMENDED"])
             steps.append({
@@ -181,15 +224,21 @@ class EvaluationAgent:
                           "current_po": keep_input},
                 "RESULT": (f"{len(table['CANDIDATES'])} options, {len(table['EXCLUDED'])} "
                            f"excluded, model {table['PREDICTION']['MODEL_ID']}, "
-                           f"fallback {table['PREDICTION']['FALLBACK']}, #1 {best}"),
+                           f"fallback {table['PREDICTION']['FALLBACK']}, #1 {best}"
+                           + ("" if po["EBELN"] in shown
+                              else ", scored only to reserve its capacity")),
             })
-            cases.append({
+            if po["EBELN"] not in shown:
+                continue
+            out.append({
                 "EBELN": po["EBELN"],
                 "LIFNR": po["LIFNR"],
                 "REASON_CODES": [r["CODE"] for r in po["REASONS"]],
                 "QTY": qty,
                 "NEED_BY": need_by,
                 "CURRENT_PO": current,
+                "URGENCY_ORDER": order,          # the fixed order spare capacity is handed out in
+                "RESERVED_FOR": before,          # kilograms taken by more urgent flagged POs
                 "SCORING": table,
             })
         return {
@@ -198,8 +247,10 @@ class EvaluationAgent:
             "MATNR": matnr,
             "TODAY": detection["TODAY"],
             "EXCLUDE_FLAGGED_SUPPLIERS": self.exclude_flagged,
+            "FLAGGED_EBELN": order,
+            "SHOWN_EBELN": [e for e in order if e in shown],
             "STEPS": steps,
-            "CASES": cases,
+            "CASES": out,
         }
 
     # ------------------------------------------------------------ step 2
@@ -235,9 +286,10 @@ class EvaluationAgent:
             cases.append(out)
         return {**report, "EXPLANATION_SETTINGS": settings, "CASES": cases}
 
-    def run(self, detection: dict[str, Any]) -> dict[str, Any]:
-        """Score, then explain."""
-        return self.explain(self.evaluate(detection))
+    def run(self, detection: dict[str, Any], flagged_pos: list[dict[str, Any]] | None = None,
+            cases: list[str] | None = None) -> dict[str, Any]:
+        """Score, then explain (only the cases shown)."""
+        return self.explain(self.evaluate(detection, flagged_pos, cases))
 
 
 def rp(amount: int) -> str:
@@ -245,7 +297,19 @@ def rp(amount: int) -> str:
     return f"Rp {amount:,}"
 
 
-def _row_facts(row: dict[str, Any], qty: float) -> dict[str, Any]:
+def is_remainder(case: dict[str, Any]) -> bool:
+    """True when the case replaces only the late remainder of a split delivery (S3)."""
+    return disruption.REASON_CAPACITY_SHORTFALL in case["REASON_CODES"]
+
+
+def keep_words(row: dict[str, Any], remainder: bool, ebeln: bool = True) -> str:
+    """What keeping means for this case: "the current order 4500000431", or for a split
+    delivery "the 7,200 kg remainder on the current order 4500000433" (kg from the row)."""
+    order = f"the current order {row['KEEP_EBELN']}" if ebeln else "the current order"
+    return f"the {row['MENGE']:,.0f} kg remainder on {order}" if remainder else order
+
+
+def _row_facts(row: dict[str, Any], qty: float, remainder: bool = False) -> dict[str, Any]:
     """One ranked row as ready-made phrases, a space between every word and number."""
     if row["COVERS_FULL_QTY"]:
         quantity = f"covers the full {qty:,.0f} kg"
@@ -255,8 +319,9 @@ def _row_facts(row: dict[str, Any], qty: float) -> dict[str, Any]:
                     f"supplier {row['LIFNR']} plus {part['MENGE']:,.0f} kg from "
                     f"supplier {part['LIFNR']} at {rp(part['NETPR'])} per kg")
     keep = is_keep(row)
+    kept = f"the {row['MENGE']:,.0f} kg remainder on order" if remainder else "order"
     return {
-        "SUPPLIER": (f"keep order {row['KEEP_EBELN']} with supplier {row['LIFNR']}, no new order"
+        "SUPPLIER": (f"keep {kept} {row['KEEP_EBELN']} with supplier {row['LIFNR']}, no new order"
                      if keep else f"supplier {row['LIFNR']}"),
         "RANK": f"rank {row['RANK']}, score {row['SCORE']}",
         "PRICE": f"{rp(row['NETPR'])} per kg" + (" (current order price)" if keep else ""),
@@ -276,24 +341,26 @@ def _phrase(part: dict[str, Any]) -> str:
     return part["DIRECTION"] if part["AMOUNT"] == 0 else f"{part['DIRECTION']} {rp(part['AMOUNT'])}"
 
 
-def _label(row: dict[str, Any]) -> str:
+def _label(row: dict[str, Any], remainder: bool = False) -> str:
     """How a comparison names a row: 'supplier 100109' or 'the current order 4500000432'."""
-    return f"the current order {row['KEEP_EBELN']}" if is_keep(row) else f"supplier {row['LIFNR']}"
+    return keep_words(row, remainder) if is_keep(row) else f"supplier {row['LIFNR']}"
 
 
-def _why_phrase(diff: dict[str, Any], row: dict[str, Any], best: dict[str, Any]) -> str | None:
+def _why_phrase(diff: dict[str, Any], row: dict[str, Any], best: dict[str, Any],
+                remainder: bool = False) -> str | None:
     """Why `row` costs more than #1, with the figure behind it (FR-SEL-4), or None."""
     if diff["MAIN_DRIVER"] == "RISK":
         return (f"mainly from {_phrase(diff['RISK'])} ({row['EXPECTED_STOCKOUT_DAYS']} expected "
-                f"days without stock against {best['EXPECTED_STOCKOUT_DAYS']} for {_label(best)})")
+                f"days without stock against {best['EXPECTED_STOCKOUT_DAYS']} for "
+                f"{_label(best, remainder)})")
     if diff["MAIN_DRIVER"] == "PURCHASE":
         return (f"mainly from {_phrase(diff['PURCHASE'])} ({rp(row['NETPR'])} per kg against "
-                f"{rp(best['NETPR'])} for {_label(best)})")
+                f"{rp(best['NETPR'])} for {_label(best, remainder)})")
     return None
 
 
 def _versus_facts(row: dict[str, Any], best: dict[str, Any], qty: float,
-                  subject: str) -> dict[str, Any]:
+                  subject: str, remainder: bool = False) -> dict[str, Any]:
     """A comparison row: its phrases plus how it compares with #1 (never a negative amount).
     `subject` opens the ready-made SENTENCE, for example "The cheapest option, supplier 100105"."""
     diff = supplier_score.compare_to_best(row, best)
@@ -305,14 +372,14 @@ def _versus_facts(row: dict[str, Any], best: dict[str, Any], qty: float,
         "PURCHASE": _phrase(diff["PURCHASE"]),
         "RISK": _phrase(diff["RISK"]),
     }
-    why = _why_phrase(diff, row, best)
+    why = _why_phrase(diff, row, best, remainder)
     if why:
         versus["WHY"] = why
     # The whole sentence is built in code: given only phrases, the model wrapped its own words
     # around them ("with expected cost Rp 972,433,035 more expected cost").
     versus["SENTENCE"] = (f"{subject} {'is a near tie: it ' if diff['NEAR_TIE'] else ''}"
                           f"would cost {gap}" + (f", {why}" if why else "") + ".")
-    return {**_row_facts(row, qty), "VS_RECOMMENDED": versus}
+    return {**_row_facts(row, qty, remainder), "VS_RECOMMENDED": versus}
 
 
 def facts_for_llm(case: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
@@ -324,6 +391,7 @@ def facts_for_llm(case: dict[str, Any], report: dict[str, Any]) -> dict[str, Any
     fastest = next((r for r in rows if r["IS_FASTEST"]), None)
     keep = next((r for r in rows if is_keep(r)), None)
     qty = case["QTY"]
+    remainder = is_remainder(case)   # S3: keeping means keeping the late remainder
     reasons = ", ".join(c.lower().replace("_", " ") for c in case["REASON_CODES"])
     facts: dict[str, Any] = {
         "DATA_NOTE": "all figures are simulated",
@@ -331,9 +399,10 @@ def facts_for_llm(case: dict[str, Any], report: dict[str, Any]) -> dict[str, Any
         "QUANTITY": f"{qty:,.0f} kg needed by the stock-out date {case['NEED_BY']}",
         "DOWNTIME_COST": f"{rp(table['DOWNTIME_COST_PER_DAY'])} per day without stock",
         "CANDIDATES": (f"{sum(not is_keep(r) for r in rows)} suppliers ranked"
-                       + (", plus keeping the current order" if keep else "")),
-        "OPENING": opening_sentence(best),
-        "RECOMMENDED": _row_facts(best, qty),
+                       + (f", plus keeping {keep_words(keep, remainder, ebeln=False)}"
+                          if keep else "")),
+        "OPENING": opening_sentence(best, remainder),
+        "RECOMMENDED": _row_facts(best, qty, remainder),
         "RECOMMENDED_IS_KEEP": best is keep,
         "RECOMMENDED_IS_CHEAPEST": best is cheapest,
         "RECOMMENDED_IS_FASTEST": best is fastest,
@@ -341,13 +410,15 @@ def facts_for_llm(case: dict[str, Any], report: dict[str, Any]) -> dict[str, Any
     if cheapest is not None and best is not cheapest:
         both = "cheapest and fastest" if cheapest is fastest else "cheapest"
         facts["CHEAPEST"] = _versus_facts(cheapest, best, qty,
-                                          f"The {both} option, supplier {cheapest['LIFNR']},")
+                                          f"The {both} option, supplier {cheapest['LIFNR']},",
+                                          remainder)
     if fastest is not None and best is not fastest and fastest is not cheapest:
         facts["FASTEST"] = _versus_facts(fastest, best, qty,
-                                         f"The fastest option, supplier {fastest['LIFNR']},")
+                                         f"The fastest option, supplier {fastest['LIFNR']},",
+                                         remainder)
     if keep is not None and best is not keep:   # why not simply keep the current order
         facts["KEEP_CURRENT_ORDER"] = _versus_facts(
-            keep, best, qty, f"Keeping the current order {keep['KEEP_EBELN']}")
+            keep, best, qty, f"Keeping {keep_words(keep, remainder)}", remainder)
     if best["N_RECEIPTS"] < MIN_TRACK_RECORD:
         facts["TRACK_RECORD_WARNING"] = (f"The recommendation rests on only {best['N_RECEIPTS']} "
                                          f"past deliveries from supplier {best['LIFNR']}.")
@@ -357,12 +428,13 @@ def facts_for_llm(case: dict[str, Any], report: dict[str, Any]) -> dict[str, Any
     return facts
 
 
-def opening_sentence(best: dict[str, Any]) -> str:
+def opening_sentence(best: dict[str, Any], remainder: bool = False) -> str:
     """The explanation's first sentence, built in code so the model does not word the
     recommendation itself (it wrote "Its expected cost is expected cost Rp ...")."""
     cost = rp(best["EXPECTED_COST"])
     if is_keep(best):
-        return (f"Recommend keeping order {best['KEEP_EBELN']} with supplier {best['LIFNR']} "
+        kept = f"the {best['MENGE']:,.0f} kg remainder on order" if remainder else "order"
+        return (f"Recommend keeping {kept} {best['KEEP_EBELN']} with supplier {best['LIFNR']} "
                 f"and placing no new order, at an expected cost of {cost}.")
     return f"Recommend supplier {best['LIFNR']} at an expected cost of {cost}."
 

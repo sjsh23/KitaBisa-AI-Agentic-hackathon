@@ -9,7 +9,7 @@ from agents.detection import DetectionAgent
 from agents import evaluation, grounding
 from agents.evaluation import (EvaluationAgent, facts_for_llm, replacement_qty,
                                required_mentions)
-from agents.run import format_evaluation, main, notices_for
+from agents.run import cases_for, format_case, format_evaluation, main, notices_on_file
 from integrations.sap.rpt_client import RptClient, RptUnavailable
 from tools import get_market_price, get_quotes, score_suppliers
 
@@ -42,13 +42,22 @@ def adapter():
 
 
 def detection(adapter, scenario):
+    """Detection as the CLI runs it: every notice on file (one world)."""
     agent = DetectionAgent(adapter=adapter, rpt_client=StubRpt({}), reasoner=lambda f: "ok")
-    return agent.detect(MATNR, notices_for(scenario, adapter.scenarios()))
+    return agent.detect(MATNR, notices_on_file(scenario, adapter.scenarios()))
 
 
-def evaluate(adapter, scenario, p_late=None, explainer=lambda facts: "ok"):
-    agent = EvaluationAgent(adapter=adapter, rpt_client=StubRpt(p_late), explainer=explainer)
-    return agent.evaluate(detection(adapter, scenario))
+def evaluate(adapter, scenario, p_late=None, explainer=lambda facts: "ok", **agent_args):
+    agent = EvaluationAgent(adapter=adapter, rpt_client=StubRpt(p_late), explainer=explainer,
+                            **agent_args)
+    det = detection(adapter, scenario)
+    return agent.evaluate(det, det["FLAGGED_POS"], cases_for(scenario, adapter.scenarios()))
+
+
+def run_s1(agent, adapter):
+    """Score and explain the S1 case, with the full flagged list as the CLI passes it."""
+    det = detection(adapter, "S1")
+    return agent.run(det, det["FLAGGED_POS"], cases_for("S1", adapter.scenarios()))
 
 
 def test_tools_quotes_and_market_price(adapter):
@@ -67,12 +76,13 @@ def test_s1_candidates_exclusions_and_ranking(adapter):
     table = case["SCORING"]
     assert (case["EBELN"], case["QTY"], case["NEED_BY"]) == ("4500000431", 10_000.0, "2026-10-06")
     # FR-SEL-1: panel suppliers with a valid quote; the disrupted and empty ones are listed.
+    # Every notice on file counts, so the suppliers of the S2 and S3 POs are disrupted too.
     assert {e["LIFNR"]: e["REASON"] for e in table["EXCLUDED"]} == {
-        "100101": "DISRUPTED_SUPPLIER", "100104": "NO_SPARE_CAPACITY",
-        "100110": "NO_SPARE_CAPACITY", "100111": "OFF_PANEL"}
+        "100101": "DISRUPTED_SUPPLIER", "100103": "DISRUPTED_SUPPLIER",
+        "100104": "DISRUPTED_SUPPLIER", "100110": "NO_SPARE_CAPACITY", "100111": "OFF_PANEL"}
     rows = table["CANDIDATES"]
     new = [r for r in rows if r["OPTION"] == "NEW_PO"]
-    assert {r["LIFNR"] for r in new} == {"100102", "100103", "100105", "100106", "100107",
+    assert {r["LIFNR"] for r in new} == {"100102", "100105", "100106", "100107",
                                          "100108", "100109"}
     # Keeping the delayed PO is ranked too: it arrives 5 days after stock runs out, so last.
     assert rows[-1]["OPTION"] == "KEEP_CURRENT_PO" and rows[-1]["LIFNR"] == "100101"
@@ -85,7 +95,7 @@ def test_s1_candidates_exclusions_and_ranking(adapter):
     assert table["CHEAPEST"] == min(new, key=lambda r: r["NETPR"])["LIFNR"]
     assert min(r["LEAD_DAYS"] for r in new) == next(
         r["LEAD_DAYS"] for r in new if r["LIFNR"] == table["FASTEST"])
-    assert table["PREDICTION"]["FALLBACK"] is False and table["PREDICTION"]["ROWS"] == 7
+    assert table["PREDICTION"]["FALLBACK"] is False and table["PREDICTION"]["ROWS"] == 6
 
 
 def test_rpt_p_late_drives_the_ranking(adapter):
@@ -105,10 +115,10 @@ def test_fallback_is_reported(adapter):
 
 
 def test_replacement_quantity_per_scenario(adapter):
-    flagged = {s: detection(adapter, s)["FLAGGED_POS"][0] for s in ("S1", "S2", "S3")}
-    assert replacement_qty(flagged["S1"]) == 10_000.0
-    assert replacement_qty(flagged["S2"]) == 8_000.0
-    assert replacement_qty(flagged["S3"]) == 7_200.0   # only the late remainder
+    flagged = {po["EBELN"]: po for po in detection(adapter, "all")["FLAGGED_POS"]}
+    assert replacement_qty(flagged["4500000431"]) == 10_000.0   # S1
+    assert replacement_qty(flagged["4500000432"]) == 8_000.0    # S2
+    assert replacement_qty(flagged["4500000433"]) == 7_200.0    # S3, only the late remainder
 
 
 def test_all_reserves_capacity_across_cases(adapter):
@@ -175,15 +185,18 @@ def test_reason_vs_cheapest_is_given(adapter, scenario):
     cheap, best = rows[case["SCORING"]["CHEAPEST"]], rows[case["SCORING"]["RECOMMENDED"]]
     why = facts["CHEAPEST"]["VS_RECOMMENDED"]["WHY"]
     assert why.startswith(f"mainly from extra risk cost Rp {cheap['RISK_COST'] - best['RISK_COST']:,} (")
+    # In S2 keeping the PO can be #1 (S1 takes 100109's spare capacity first).
+    label = (f"the current order {best['KEEP_EBELN']}" if best["OPTION"] == "KEEP_CURRENT_PO"
+             else f"supplier {best['LIFNR']}")
     assert (f"{cheap['EXPECTED_STOCKOUT_DAYS']} expected days without stock against "
-            f"{best['EXPECTED_STOCKOUT_DAYS']} for supplier {best['LIFNR']}") in why
+            f"{best['EXPECTED_STOCKOUT_DAYS']} for {label}") in why
     labels = [label for label, _ in required_mentions(facts)]
     assert any(label.startswith("reason vs cheapest: mainly from extra risk cost") for label in labels)
     assert "days without stock" in labels
 
 
 def test_explanation_without_reason_fails_the_check(adapter):
-    report = evaluate(adapter, "S2", {})
+    report = evaluate(adapter, "S1", {})   # a new order wins and rests on 4 past deliveries
     facts = facts_for_llm(report["CASES"][0], report)
     versus = facts["CHEAPEST"]["VS_RECOMMENDED"]
     base = (f"Order from {facts['RECOMMENDED']['SUPPLIER']}. The cheapest has "
@@ -210,7 +223,7 @@ def test_run_adds_explanation_and_check(adapter):
                 "simulated. ", "model-x")
 
     agent = EvaluationAgent(adapter=adapter, rpt_client=StubRpt({}), explainer=explainer)
-    report = agent.run(detection(adapter, "S1"))
+    report = run_s1(agent, adapter)
     case = report["CASES"][0]
     assert case["EXPLANATION"].startswith("Order from supplier 100109")
     assert case["EXPLANATION_MODEL"] == "model-x" and case["EXPLANATION_ERROR"] is None
@@ -230,7 +243,7 @@ def test_explanation_is_tidied_before_the_check(adapter):
                 f"It rests on only {best['PAST_DELIVERIES']}. All figures are simulated.")
 
     agent = EvaluationAgent(adapter=adapter, rpt_client=StubRpt({}), explainer=explainer)
-    report = agent.run(detection(adapter, "S1"))
+    report = run_s1(agent, adapter)
     case = report["CASES"][0]
     assert "againts" not in case["EXPLANATION"] and " against " in case["EXPLANATION"]
     assert ". The cheapest" in case["EXPLANATION"]
@@ -242,7 +255,7 @@ def test_explanation_is_tidied_before_the_check(adapter):
 def test_invented_number_is_flagged(adapter):
     agent = EvaluationAgent(adapter=adapter, rpt_client=StubRpt({}),
                             explainer=lambda facts: "It saves about Rp12.3 million.")
-    check = agent.run(detection(adapter, "S1"))["CASES"][0]["EXPLANATION_CHECK"]
+    check = run_s1(agent, adapter)["CASES"][0]["EXPLANATION_CHECK"]
     assert check["UNGROUNDED_NUMBERS"] == ["12.3"] and check["PASSED"] is False
 
 
@@ -251,7 +264,7 @@ def test_run_survives_missing_llm(adapter):
         raise llm.LlmUnavailable("SAP AI Core credentials (AICORE_*) are not set")
 
     agent = EvaluationAgent(adapter=adapter, rpt_client=StubRpt({}), explainer=explainer)
-    report = agent.run(detection(adapter, "S1"))
+    report = run_s1(agent, adapter)
     case = report["CASES"][0]
     assert case["EXPLANATION"] is None and "AICORE_*" in case["EXPLANATION_ERROR"]
     assert case["SCORING"]["CANDIDATES"]                  # the table survives
@@ -314,11 +327,9 @@ def test_no_row_is_ranked_for_more_than_its_spare_capacity(adapter):
 
 
 def test_exclude_flagged_suppliers_flag(adapter, monkeypatch):
-    det = detection(adapter, "S2")
-    on = EvaluationAgent(adapter=adapter, rpt_client=StubRpt({}), exclude_flagged=True)
-    off = EvaluationAgent(adapter=adapter, rpt_client=StubRpt({}), exclude_flagged=False)
-    excluded_on = {e["LIFNR"]: e["REASON"] for e in on.evaluate(det)["CASES"][0]["SCORING"]["EXCLUDED"]}
-    off_report = off.evaluate(det)
+    on_report = evaluate(adapter, "S2", {}, exclude_flagged=True)
+    off_report = evaluate(adapter, "S2", {}, exclude_flagged=False)
+    excluded_on = {e["LIFNR"]: e["REASON"] for e in on_report["CASES"][0]["SCORING"]["EXCLUDED"]}
     assert excluded_on["100103"] == "DISRUPTED_SUPPLIER"
     assert off_report["EXCLUDE_FLAGGED_SUPPLIERS"] is False
     assert "100103" in {r["LIFNR"] for r in off_report["CASES"][0]["SCORING"]["CANDIDATES"]}
@@ -332,7 +343,7 @@ def test_masking_check_blocks_the_call(adapter, monkeypatch):
                         lambda case, report: {"NOTE": "PT Sumber Rasa Baru is best"})
     agent = EvaluationAgent(adapter=adapter, rpt_client=StubRpt({}),
                             explainer=lambda facts: called.append(facts) or "x")
-    case = agent.run(detection(adapter, "S1"))["CASES"][0]
+    case = run_s1(agent, adapter)["CASES"][0]
     assert called == [] and case["EXPLANATION"] is None
     assert "masking check failed" in case["EXPLANATION_ERROR"]
 
@@ -381,7 +392,7 @@ def test_keep_comparison_is_given_when_a_new_order_wins(adapter):
     versus = facts["KEEP_CURRENT_ORDER"]["VS_RECOMMENDED"]
     assert facts["RECOMMENDED_IS_KEEP"] is False
     assert versus["WHY"].startswith("mainly from extra risk cost Rp ")   # 5 days after stock-out
-    assert facts["CANDIDATES"] == "7 suppliers ranked, plus keeping the current order"
+    assert facts["CANDIDATES"] == "6 suppliers ranked, plus keeping the current order"
 
 
 def test_comparison_sentences_are_built_in_code(adapter):
@@ -398,3 +409,81 @@ def test_comparison_sentences_are_built_in_code(adapter):
         for key in ("KEEP_CURRENT_ORDER", "CHEAPEST", "FASTEST"):
             if key in facts:
                 assert not grounding.repeated_phrases(facts[key]["VS_RECOMMENDED"]["SENTENCE"])
+
+
+# --------------------------------- one world: a case's table does not depend on the run
+@pytest.mark.parametrize("scenario,ebeln", [("S1", "4500000431"), ("S2", "4500000432"),
+                                            ("S3", "4500000433")])
+def test_case_table_is_the_same_alone_and_in_all(adapter, scenario, ebeln):
+    # Ranks, recommended, cheapest and fastest labels, every number, and the printed table.
+    alone = evaluate(adapter, scenario, {})
+    together = evaluate(adapter, "all", {})
+    assert [c["EBELN"] for c in alone["CASES"]] == [ebeln]
+    case = alone["CASES"][0]
+    same = next(c for c in together["CASES"] if c["EBELN"] == ebeln)
+    assert json.dumps(case, sort_keys=True) == json.dumps(same, sort_keys=True)
+    assert format_case(case) == format_case(same)
+    assert alone["FLAGGED_EBELN"] == together["FLAGGED_EBELN"] == [
+        "4500000431", "4500000433", "4500000432"]
+
+
+def test_s1_excludes_the_suppliers_detection_flagged(adapter):
+    table = evaluate(adapter, "S1", {})["CASES"][0]["SCORING"]
+    excluded = {e["LIFNR"]: e["REASON"] for e in table["EXCLUDED"]}
+    assert excluded["100103"] == excluded["100104"] == "DISRUPTED_SUPPLIER"   # PO 432 and 433
+    assert table["CHEAPEST"] == "100105"
+
+
+def test_s3_alone_reserves_what_s1_takes_first(adapter):
+    report = evaluate(adapter, "S3", {})
+    case = report["CASES"][0]
+    assert case["RESERVED_FOR"] == [{"EBELN": "4500000431", "LIFNR": "100109", "KG": 10_000.0}]
+    assert case["SCORING"]["RESERVED_KG"] == {"100109": 10_000.0}
+    assert "scored only to reserve its capacity" in report["STEPS"][0]["RESULT"]
+    text = "\n".join(format_case(case))
+    assert ("Capacity rule: spare capacity goes to the flagged POs in Detection's urgency order "
+            "(4500000431, 4500000433, 4500000432)") in text
+    assert "Reserved for more urgent POs: 100109 10,000 kg (PO 4500000431)" in text
+    assert "Cheapest tie-break: on an equal NETPR, fewer OUT d first" in text
+
+
+def test_evaluation_without_the_flagged_list_fails_loudly(adapter):
+    agent = EvaluationAgent(adapter=adapter, rpt_client=StubRpt({}))
+    det = detection(adapter, "all")
+    with pytest.raises(evaluation.FlaggedListMissing, match="full list of flagged POs"):
+        agent.evaluate(det)
+    with pytest.raises(evaluation.FlaggedListMissing, match="missing POs .*4500000433"):
+        agent.evaluate(det, det["FLAGGED_POS"][:1])   # only the case to show, not the list
+    with pytest.raises(evaluation.FlaggedListMissing):
+        agent.run(det)
+
+
+def test_cheapest_tie_break_is_stable(adapter):
+    # 100103 and 100105 both quote Rp17,450, the lowest price once the S1 supplier is out.
+    # 100103 arrives a day earlier, so fewer expected stock-out days.
+    table = score_suppliers(MATNR, 10_000, "2026-10-06", exclude_lifnr=["100101"],
+                            adapter=adapter, client=StubRpt({}))
+    rows = {r["LIFNR"]: r for r in table["CANDIDATES"]}
+    assert rows["100103"]["NETPR"] == rows["100105"]["NETPR"] == 17_450
+    assert rows["100103"]["EXPECTED_STOCKOUT_DAYS"] < rows["100105"]["EXPECTED_STOCKOUT_DAYS"]
+    assert table["CHEAPEST"] == "100103"
+
+
+def test_s3_keep_wording_names_the_remainder(adapter):
+    report = evaluate(adapter, "S3", {})
+    case = report["CASES"][0]
+    facts = facts_for_llm(case, report)
+    kg = f"{case['SCORING']['KEEP']['MENGE']:,.0f}"
+    assert kg == "7,200"
+    assert facts["KEEP_CURRENT_ORDER"]["VS_RECOMMENDED"]["SENTENCE"].startswith(
+        f"Keeping the {kg} kg remainder on the current order 4500000433 would cost Rp ")
+    assert facts["CANDIDATES"].endswith(f"plus keeping the {kg} kg remainder on the current order")
+    assert facts["KEEP_CURRENT_ORDER"]["SUPPLIER"].startswith(f"keep the {kg} kg remainder on order")
+    keep = case["SCORING"]["KEEP"]
+    assert evaluation.opening_sentence(keep, remainder=True).startswith(
+        f"Recommend keeping the {kg} kg remainder on order 4500000433 with supplier 100104")
+    assert f"Keep row = the {kg} kg remainder on PO 4500000433" in "\n".join(format_case(case))
+    # S1 and S2 replace the whole PO, so their wording is unchanged.
+    s1 = evaluate(adapter, "S1", {})
+    assert facts_for_llm(s1["CASES"][0], s1)["KEEP_CURRENT_ORDER"]["VS_RECOMMENDED"][
+        "SENTENCE"].startswith("Keeping the current order 4500000431 would cost")

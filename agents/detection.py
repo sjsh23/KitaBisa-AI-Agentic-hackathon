@@ -99,8 +99,7 @@ class DetectionAgent:
             for po in open_pos
         ]
         # Most urgent first: largest gap after stock-out, then highest delay risk.
-        flagged = sorted((po for po in evaluated if po["FLAGGED"]),
-                         key=lambda po: (-po["GAP_DAYS"], -(po["P_LATE"] or 0.0), po["EBELN"]))
+        flagged = sorted((po for po in evaluated if po["FLAGGED"]), key=disruption.urgency_key)
 
         return {
             "AGENT": AGENT_NAME,

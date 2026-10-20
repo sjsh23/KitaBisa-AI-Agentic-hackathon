@@ -9,7 +9,7 @@ from agents.action import (NEXT_BUYER, NEXT_DONE, NEXT_MANAGER, ActionAgent, hum
                            order_parts)
 from agents.detection import DetectionAgent
 from agents.evaluation import EvaluationAgent
-from agents.run import format_action, main, notices_for
+from agents.run import cases_for, format_action, main, notices_on_file
 from integrations.sap.rpt_client import RptClient
 from policy import AGENT, buyer, manager
 from tools import draft_po, release_po, submit_for_approval
@@ -39,9 +39,9 @@ def adapter():
 def evaluation(adapter, scenario):
     rpt = StubRpt()
     detection = DetectionAgent(adapter=adapter, rpt_client=rpt, reasoner=lambda f: "ok").detect(
-        MATNR, notices_for(scenario, adapter.scenarios()))
-    return EvaluationAgent(adapter=adapter, rpt_client=rpt,
-                           explainer=lambda f: "ok").evaluate(detection)
+        MATNR, notices_on_file(scenario, adapter.scenarios()))
+    return EvaluationAgent(adapter=adapter, rpt_client=rpt, explainer=lambda f: "ok").evaluate(
+        detection, detection["FLAGGED_POS"], cases_for(scenario, adapter.scenarios()))
 
 
 def draft(store, lifnr="100109", qty=7_200.0, netpr=17_550, principal=AGENT):
@@ -206,7 +206,8 @@ def test_cli_prints_action_and_approvals(monkeypatch, capsys):
 # ------------------------------------------------- the old PO (proposal item 5)
 @pytest.mark.parametrize("scenario, action, new_menge, words", [
     ("S1", "CANCEL", 0.0, "it would arrive 2026-10-11, 5 days after stock runs out"),
-    ("S2", "CANCEL", 0.0, "now asks Rp18,700 per kg instead of Rp17,650"),
+    # One world: S1 takes 100109's spare capacity first, so keeping PO 432 wins (as in `all`).
+    ("S2", "KEEP", 8_000.0, "accepts the revised price Rp18,700 per kg (was Rp17,650)"),
     ("S3", "REDUCE", 4_800.0, "reduce from 12,000 to 4,800 kg (the part arriving 2026-10-01)"),
 ])
 def test_every_case_says_what_happens_to_the_old_po(adapter, scenario, action, new_menge, words):
