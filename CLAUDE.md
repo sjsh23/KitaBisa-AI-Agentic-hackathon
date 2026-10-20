@@ -51,6 +51,9 @@ pytest -q
 # (add --no-llm, --json, --approve to simulate the buyer and manager clicks,
 # or --detect-only for Detection alone)
 python -m agents.run S1
+# Integrity Guard: the buyer's own choice, justification rule, override log, pattern flags
+# (no --choose = take #1; --choose <LIFNR> or keep; log at DECISION_LOG_PATH, default ./decision_log.jsonl)
+python -m agents.integrity S1 --buyer BUYER01 --choose 100108 --justification "text of 20+ characters"
 ```
 
 Credentials for SAP AI Core (SAP-RPT-1.6 and the Gen AI Hub models) go in `.env` (see `.env.example`).

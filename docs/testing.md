@@ -1,8 +1,8 @@
 # GESIT testing guide
 
 Step-by-step checks for what is built so far: the Disruption Detection agent
-(FR-DET-1 to FR-DET-4), the Supplier Evaluation agent (FR-SEL-1 to FR-SEL-4) and
-the pieces under them. All data is simulated.
+(FR-DET-1 to FR-DET-4), the Supplier Evaluation agent (FR-SEL-1 to FR-SEL-4), the Action
+agent (FR-ACT-1 to FR-ACT-3), the Integrity Guard (FR-INT-1 to FR-INT-4) and the pieces under them. All data is simulated.
 
 Commands are for Windows PowerShell on the dev machine, where Python is started
 with `py -3.11`. On macOS or Linux use `python` instead. Run everything from the
@@ -67,7 +67,7 @@ git diff --cached --name-only
 py -3.11 -m pytest -q
 ```
 
-Expected: `167 passed`. The tests never call the network: SAP-RPT, SAP AI Core and the reasoning models are replaced by fakes.
+Expected: `187 passed`. The tests never call the network: SAP-RPT, SAP AI Core and the reasoning models are replaced by fakes.
 
 | Test file | What it proves | Requirements |
 |---|---|---|
@@ -80,6 +80,7 @@ Expected: `167 passed`. The tests never call the network: SAP-RPT, SAP AI Core a
 | `tests/test_rpt_features.py` | Feature rows for hypothetical POs use the same definitions as `rpt_po_lines`; calendar constants match `data_gen/config.py` | FR-SEL-2, D-4 |
 | `tests/test_grounding.py` | Word limit, dashes, numbers not in the facts, negative Rp amounts, a LIFNR glued to a word, required mentions, the masking check | FR-SEL-4, D-3, PRD section 10 |
 | `tests/test_evaluation_agent.py` | Candidates and exclusions per scenario, the EXCLUDE_FLAGGED_SUPPLIERS switch, replacement quantity, no row above its spare capacity, capacity reserved across cases, facts as phrases, the reason vs the cheapest in S1 to S3 and the check failing without it, masking check blocks the call, survival without the LLM, CLI | FR-SEL-1 to FR-SEL-4, PRD section 10 |
+| `tests/test_integrity.py` | Only BUYER03 with 100107 flagged on the simulated EKKO (40 pairs tested); k = 4, ratio 1.9 and p >= 0.01 not flagged; share_others = 0 does not crash; binomial tail equals scipy; justification 19 characters rejected, 20 accepted, 25 spaces rejected; same choice writes nothing; one log line with every field; cost difference chosen minus recommended; overriding a keep recommendation; the Action agent drafts a choice only with an override id; neutral wording; the three CLI paths. Uses a temp DECISION_LOG_PATH | FR-INT-1 to FR-INT-4, D-3 |
 
 To run one file or one test:
 
@@ -207,6 +208,31 @@ routed to it and each buyer releases its own drafts. Every order then says
 `all` it stays "yes", because the buyer still has to accept the revised price on 4500000432.
 
 Run the same command twice and compare: the output must be identical (NFR-2).
+
+### Integrity Guard (FR-INT-1 to FR-INT-4)
+
+No LLM is used. Without credentials SAP-RPT falls back to the posterior, as above. Each
+override is appended to the decision log at DECISION_LOG_PATH (default
+`decision_log.jsonl` in the folder you run from, gitignored); delete that file to start
+clean (`scripts/reset_demo` does not exist yet).
+
+```powershell
+py -3.11 -m agents.integrity S1 --buyer BUYER01
+py -3.11 -m agents.integrity S1 --buyer BUYER01 --choose 100108 --justification "cheaper"
+py -3.11 -m agents.integrity S1 --buyer BUYER01 --choose 100108 --justification "100109 has only 4 goods receipts; 100108 has 51 and we prefer the longer track record"
+```
+
+| Path | Expected |
+|---|---|
+| no `--choose` | "No override, nothing logged.", draft 4500000435 for 100109 routed to the manager (POL-1) |
+| short justification | "Rejected: ... at least 20 characters (7 given). No draft PO was created.", exit code 1, no GESIT Action section, nothing logged |
+| valid override | override record OVR-4500000431-001 with COST_DIFFERENCE 33,026,785 (Rp211,473,214 minus Rp178,446,429, simulated), draft 4500000435 for 100108 at Rp175,000,000 routed to the manager (POL-1) |
+
+Every path that gets past the rule ends with the flags table: one row, BUYER03 with 100107
+(27 of 113 POs, 23.9% against 3.1% for other buyers, 7.7x, simulated), "Pairs tested: 40
+... flagged: 1", and the sentence "This is a statistic, not a finding." Use `--choose keep`
+to keep the current PO instead of the #1 new order (also an override). A supplier that is
+not in the ranked table (for example 100111, off the panel) is rejected.
 
 ## Step 5: SAP-RPT-1.6 alone (network)
 
@@ -382,7 +408,7 @@ After steps 5 to 7, update `WORKING.md` (status of section 7.2, done log) with:
 
 ## Not covered yet
 
-Integrity Guard, the supervisor, Cedar policies on AgentCore and the Joule UI do
+The supervisor, Cedar policies on AgentCore and the Joule UI do
 not exist yet, so there is nothing to test for them. The Action agent's policies
 POL-1 to POL-4 run as local Python (`policy/local_policy.py`, tests in
 `tests/test_policy.py`) until AgentCore Policy is set up. The Supplier Evaluation

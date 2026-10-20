@@ -240,6 +240,33 @@ which judges may confuse with "evaluation vs baselines".
 Action, then Integrity Guard and Evaluation and Learning as needed; stop and hand back to the
 human when policy denies an action."
 
+## 8. Clarifications: Integrity Guard choices where the PRD is silent (FR-INT-1 to FR-INT-3, section 8)
+
+**Status:** built on 20 Oct 2026 (`scoring/integrity.py`, `tools/integrity_tools.py`,
+`agents/integrity.py`); waiting for the team. None changes a rule; object and they change.
+
+- **FR-INT-1 covers "keep the current PO" too.** The PRD says "a supplier other than #1". Since
+  keeping the flagged PO is ranked (item 4), choosing a new order when keeping ranked #1, or
+  keeping when a new order ranked #1, also needs the 20-character justification. Options are
+  named by LIFNR or "keep PO <EBELN>" in the log.
+- **Only ranked options can be chosen.** A supplier that was excluded (off the panel, no spare
+  capacity, a flagged PO in this run) has no expected cost, so it is rejected before the
+  override is logged. POL-2 therefore never fires in this path; it still guards `draft_po`.
+- **FR-INT-3 when no other buyer uses the supplier.** share_others = 0 gives no ratio; the code
+  counts it as meeting the "at least 2x" rule when k > 0 (p is then 0). It does not occur in the
+  current data.
+- **FR-INT-3 test count.** Every buyer and supplier in EKKO is one test, k = 0 included: 40
+  tests (4 buyers x 10 suppliers), 1 flagged (BUYER03 with 100107, simulated). At p < 0.01 about
+  0.4 would pass the p-value rule by chance; the output says so.
+- **Section 8, `record_override`.** Input is ebeln, recommended, chosen, justification as in the
+  PRD, plus the Evaluation case (the expected costs are copied from its ranked rows, never sent
+  by a model) and the buyer (from the caller identity once behind the Gateway). The override id
+  is `OVR-<EBELN>-<n>`. `get_integrity_flags` also returns the number of pairs tested and
+  override counts per buyer and per chosen option.
+- **Storage.** The decision log is a JSONL file (DECISION_LOG_PATH, default
+  `./decision_log.jsonl`, gitignored) until DynamoDB is set up (PRD section 5), with the same
+  function signatures.
+
 ## PRD Changelog draft
 
 Lines to add to the Changelog at the end of `PRD.md` once the team agrees:
@@ -250,3 +277,4 @@ Lines to add to the Changelog at the end of `PRD.md` once the team agrees:
 - 2026-10-15: FR-SEL-2: split orders made explicit ("cannot cover full quantity", kilograms add up to Q, never ranked above spare capacity); in a run with several flagged POs, the recommended order reserves spare capacity for later cases. The S1 versus `all` difference for 100109 (12,500 kg spare) was this reservation, now shown in the output.
 - 2026-10-20: Section 8: tool inputs and outputs brought in line with the code: `get_supplier_history` today?; `predict_delay_risk` returns the fallback reason and network retries; `score_suppliers` takes today?, exclude_lifnr?, reserved_kg?, current_po?; `draft_po` takes ernam, replaces?, bedat?; `submit_for_approval` and `release_po` use the caller identity from the Gateway (POL-1, POL-4).
 - 2026-10-20: FR-SUP-2 names Supplier Evaluation and Evaluation and Learning apart; the code's Supplier Evaluation agent is renamed `agents/supplier_evaluation.py` (option A) or the FR-EVA agent becomes the Learning agent (option B).
+- 2026-10-20: FR-INT-1: the justification rule also applies to choosing or leaving "keep the current PO"; only ranked options can be chosen. FR-INT-3: share_others = 0 counts as meeting the ratio rule; every buyer and supplier pair in EKKO counts as one test (40 on the current data, 1 flagged, simulated). Section 8: `record_override` also takes the Evaluation case and the buyer; `get_integrity_flags` returns the number of pairs tested and override counts.

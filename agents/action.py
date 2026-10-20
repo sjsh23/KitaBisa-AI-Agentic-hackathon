@@ -6,8 +6,9 @@ For every case with a recommendation:
 1. `draft_po` for the #1 supplier (FR-ACT-1); a split recommendation gets one
    draft per supplier, so the kilograms add up to the replacement quantity.
    ERNAM is the buyer of the PO being replaced. The agent never picks another
-   supplier: a buyer's own choice needs a justification first (FR-INT-1), which
-   comes with the Integrity Guard.
+   option itself: a buyer's own choice (`choices`) is drafted only with the id of
+   an override the Integrity Guard logged after the justification check (FR-INT-1,
+   FR-INT-2, `tools.integrity_tools`).
 2. Policy check: may that buyer release the draft (`policy.authorize`, the same
    check `release_po` runs)? If yes, the draft waits for the buyer's one-click
    approval (FR-ACT-3). If POL-1 denies it (NETWR above the threshold), the agent
@@ -35,6 +36,7 @@ from adapters.po_store import STATUS_RELEASED
 from policy import AGENT, APPROVAL_THRESHOLD_IDR, Principal, authorize, buyer, manager
 from scoring import disruption, supplier_score
 from tools import draft_po, release_po, submit_for_approval
+from tools.integrity_tools import find_option, recommended_label
 
 AGENT_NAME = "action"
 
@@ -60,13 +62,16 @@ def order_parts(row: dict[str, Any]) -> list[dict[str, Any]]:
     return parts
 
 
-def reason_text(case: dict[str, Any], part_no: int, n_parts: int) -> str:
+def reason_text(case: dict[str, Any], part_no: int, n_parts: int,
+                row: dict[str, Any] | None = None, override_id: str | None = None) -> str:
     """Why the draft exists, for the PO text and the audit trail (no names, simulated)."""
     table = case["SCORING"]
-    best = table["CANDIDATES"][0]
+    row = row or table["CANDIDATES"][0]
     reasons = ", ".join(c.lower().replace("_", " ") for c in case["REASON_CODES"])
-    text = (f"Replaces PO {case['EBELN']} ({reasons}). GESIT rank 1 of "
-            f"{len(table['CANDIDATES'])}, expected cost Rp{best['EXPECTED_COST']:,} (simulated).")
+    text = (f"Replaces PO {case['EBELN']} ({reasons}). GESIT rank {row['RANK']} of "
+            f"{len(table['CANDIDATES'])}, expected cost Rp{row['EXPECTED_COST']:,} (simulated).")
+    if override_id:
+        text += f" Buyer's choice, override {override_id}."
     if n_parts > 1:
         text += f" Split order, part {part_no} of {n_parts}."
     return text
@@ -135,29 +140,49 @@ class ActionAgent:
         self.store = store or PoStore(self.adapter)
         self.principal = principal
 
-    def act(self, evaluation: dict[str, Any]) -> dict[str, Any]:
-        """Drafts and policy routing for every case of a Supplier Evaluation report."""
+    def act(self, evaluation: dict[str, Any],
+            choices: dict[str, dict[str, Any]] | None = None,
+            buyer_id: str | None = None) -> dict[str, Any]:
+        """Drafts and policy routing for every case of a Supplier Evaluation report.
+
+        `choices` maps EBELN to the buyer's choice {"CHOSEN": option label, "OVERRIDE_ID":
+        id or None}; a choice other than #1 without an override id raises ValueError, so
+        no draft exists before the justification was checked and logged (FR-INT-1).
+        `buyer_id` replaces the buyer of the old PO as the one acting (ERNAM of the drafts).
+        """
+        choices = choices or {}
         buyers = {line["EBELN"]: line["ERNAM"] for line in self.adapter.po_lines()}
         steps: list[dict[str, Any]] = []
         cases = []
         for case in evaluation["CASES"]:
-            buyer_id = buyers[case["EBELN"]]
-            out = {"EBELN": case["EBELN"], "LIFNR": case["LIFNR"], "BUYER": buyer_id,
+            owner_id = buyer_id or buyers[case["EBELN"]]
+            out = {"EBELN": case["EBELN"], "LIFNR": case["LIFNR"], "BUYER": owner_id,
                    "QTY": case["QTY"], "ORDERS": [], "NOTE": None,
-                   "OLD_PO": old_po_action(case)}
+                   "OLD_PO": old_po_action(case), "CHOSEN": None, "OVERRIDE_ID": None}
             if not case["SCORING"]["CANDIDATES"]:
                 out["NOTE"] = "no candidate supplier, nothing drafted; handed back to the buyer"
                 cases.append(out)
                 continue
-            if case["SCORING"]["CANDIDATES"][0].get("OPTION") == supplier_score.OPTION_KEEP:
-                out["NOTE"] = ("keeping the current PO ranks #1, nothing drafted; handed back "
+            choice = choices.get(case["EBELN"])
+            row, override_id = self._chosen_row(case, choice)
+            out["CHOSEN"] = choice["CHOSEN"] if choice else None
+            out["OVERRIDE_ID"] = override_id
+            if row.get("OPTION") == supplier_score.OPTION_KEEP:
+                out["NOTE"] = (f"the buyer chose to keep the current PO (override {override_id}), "
+                               "nothing drafted" if override_id else
+                               "keeping the current PO ranks #1, nothing drafted; handed back "
                                "to the buyer")
+                if override_id:   # the keep text is about #1, so say it in the buyer's terms
+                    out["OLD_PO"] = {**(out["OLD_PO"] or {}), "ACTION": OLD_PO_KEEP,
+                                     "TEXT": f"Old PO {case['EBELN']}: kept as it is, by the "
+                                             f"buyer's choice. {OLD_PO_BY}"}
                 cases.append(out)
                 continue
-            parts = order_parts(case["SCORING"]["CANDIDATES"][0])
+            parts = order_parts(row)
             for i, part in enumerate(parts, 1):
                 out["ORDERS"].append(self._draft_and_route(
-                    case, part, reason_text(case, i, len(parts)), buyer(buyer_id), steps))
+                    case, part, reason_text(case, i, len(parts), row, override_id),
+                    buyer(owner_id), steps))
             cases.append(out)
         return {
             "AGENT": AGENT_NAME,
@@ -170,6 +195,24 @@ class ActionAgent:
             "CASES": cases,
             "HANDED_BACK": handed_back(cases),   # FR-SUP-2: a human decides next
         }
+
+    @staticmethod
+    def _chosen_row(case: dict[str, Any],
+                    choice: dict[str, Any] | None) -> tuple[dict[str, Any], str | None]:
+        """The row to act on: #1, or the buyer's choice backed by a logged override."""
+        best = case["SCORING"]["CANDIDATES"][0]
+        if not choice:
+            return best, None
+        row = find_option(case, choice["CHOSEN"])
+        if row is None:
+            raise ValueError(f"{choice['CHOSEN']} is not one of the ranked options for PO "
+                             f"{case['EBELN']}")
+        if row is best:
+            return best, None
+        if not choice.get("OVERRIDE_ID"):
+            raise ValueError(f"choosing {choice['CHOSEN']} instead of {recommended_label(case)} "
+                             "needs a logged override with a justification first (FR-INT-1)")
+        return row, choice["OVERRIDE_ID"]
 
     def _draft_and_route(self, case: dict[str, Any], part: dict[str, Any], reason: str,
                          owner: Principal, steps: list[dict[str, Any]]) -> dict[str, Any]:
