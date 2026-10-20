@@ -14,7 +14,7 @@ Changelog in one change (CLAUDE.md working rules). All numbers are simulated.
 same detection run. They are not hidden: the table lists them as excluded with the
 reason "has a flagged PO in this run (EXCLUDE_FLAGGED_SUPPLIERS)".
 
-**Switch:** `EXCLUDE_FLAGGED_SUPPLIERS = True` in `agents/evaluation.py`. Set the
+**Switch:** `EXCLUDE_FLAGGED_SUPPLIERS = True` in `agents/supplier_evaluation.py`. Set the
 environment variable `GESIT_EXCLUDE_FLAGGED_SUPPLIERS=false` to turn it off for a run.
 
 **Reason:** a supplier that has just sent a delay notice or a capacity shortfall
@@ -109,8 +109,7 @@ answered."
 
 ## 4. Proposed PRD change: rank "keep the current PO" next to the backups (FR-SEL-1, FR-SEL-3, FR-ACT-1)
 
-**Status:** built on 20 Oct 2026 after a team review question; the team member chose "ranked
-option". Waiting for the team to confirm the PRD text.
+**Status:** Applied to PRD.md on 20 October 2026.
 
 **The question (judges are likely to ask it):** why replace PO 4500000432 at all? It still
 arrives 3 days before stock runs out; only the price went up (+5.9%). The output had no
@@ -151,8 +150,7 @@ case is handed back to the buyer."
 
 ## 5. Proposed PRD change: say what happens to the old PO (FR-ACT-1, section 8)
 
-**Status:** built on 20 Oct 2026 after a team review question; the team member chose "say it,
-don't change it". Waiting for the team to confirm.
+**Status:** Applied to PRD.md on 20 October 2026.
 
 **The question:** PO 4500000431 is replaced and PO 4500000433 keeps only 4,800 kg, but the
 output did not say whether the old POs are cancelled or reduced.
@@ -181,9 +179,9 @@ in S/4; GESIT does not change the old PO."
 
 ## 6. Proposed PRD change: tool inputs and outputs the code needs (section 8)
 
-**Status:** found on 20 Oct 2026 when the PRD was checked against the code; waiting for the team.
+**Status:** Applied to PRD.md on 20 October 2026.
 
-**What section 8 says today:** the input and output of each of the 14 tools. Five of the ten
+**What section 8 said before:** the input and output of each of the 14 tools. Five of the ten
 tools built so far take more than that, or return more.
 
 | Tool | Section 8 today | Added in the code | Why |
@@ -215,7 +213,7 @@ the tools become Lambda handlers behind the Gateway.
 
 ## 7. Proposed rename: two different agents are called "Evaluation" (sections 4, 5, 7.1, 16)
 
-**Status:** found on 20 Oct 2026 when the PRD was checked against the code; waiting for the team.
+**Status:** Applied, option A (PRD.md on 20 October 2026).
 
 **The clash:** the PRD has a Supplier Evaluation agent (FR-SEL, ranks backup suppliers) and an
 Evaluation agent (FR-EVA, Evaluation and Learning: reliability update, baselines). In the code,
@@ -242,8 +240,7 @@ human when policy denies an action."
 
 ## 8. Clarifications: Integrity Guard choices where the PRD is silent (FR-INT-1 to FR-INT-3, section 8)
 
-**Status:** built on 20 Oct 2026 (`scoring/integrity.py`, `tools/integrity_tools.py`,
-`agents/integrity.py`); waiting for the team. None changes a rule; object and they change.
+**Status:** Applied to PRD.md on 20 October 2026.
 
 - **FR-INT-1 covers "keep the current PO" too.** The PRD says "a supplier other than #1". Since
   keeping the flagged PO is ranked (item 4), choosing a new order when keeping ranked #1, or
@@ -269,8 +266,7 @@ human when policy denies an action."
 
 ## 9. Proposed PRD change: one world for the demo scenarios (FR-DET-2, FR-SEL-1 to FR-SEL-3, section 12)
 
-**Status:** built on 20 Oct 2026 after a review note (the S1 table differed between
-`agents.integrity S1` and `agents.run all`); the user chose this option. Waiting for the team.
+**Status:** Applied to PRD.md on 20 October 2026.
 
 **What was wrong.** Detection for trigger S1 saw only the S1 notice, so it flagged only
 4500000431. In S1 alone, 100103 (PO 4500000432, P(late) 0.20, no notice) was a valid backup
@@ -313,10 +309,4 @@ days, then more spare capacity, then the lower LIFNR."
 Lines to add to the Changelog at the end of `PRD.md` once the team agrees:
 
 - 2026-10-15: FR-SEL-1: suppliers with a flagged PO in the same run are excluded by default (switch EXCLUDE_FLAGGED_SUPPLIERS, reason listed per supplier); suppliers with zero spare capacity are excluded. Open: keep 100103 in S2, since a price revision does not delay delivery.
-- 2026-10-20: FR-SEL-1, FR-SEL-3, FR-ACT-1: keeping the flagged PO as it is is ranked as one more option with the same expected-cost formula; cheapest and fastest are marked among new orders only; nothing is drafted when keeping ranks #1. `score_suppliers` gets the optional input `current_po` (section 8).
-- 2026-10-20: FR-ACT-1: every case says what happens to the old PO (cancel, reduce to the on-time part, or keep); the buyer makes the change in S/4, GESIT does not.
 - 2026-10-15: FR-SEL-2: split orders made explicit ("cannot cover full quantity", kilograms add up to Q, never ranked above spare capacity); in a run with several flagged POs, the recommended order reserves spare capacity for later cases. The S1 versus `all` difference for 100109 (12,500 kg spare) was this reservation, now shown in the output.
-- 2026-10-20: Section 8: tool inputs and outputs brought in line with the code: `get_supplier_history` today?; `predict_delay_risk` returns the fallback reason and network retries; `score_suppliers` takes today?, exclude_lifnr?, reserved_kg?, current_po?; `draft_po` takes ernam, replaces?, bedat?; `submit_for_approval` and `release_po` use the caller identity from the Gateway (POL-1, POL-4).
-- 2026-10-20: FR-SUP-2 names Supplier Evaluation and Evaluation and Learning apart; the code's Supplier Evaluation agent is renamed `agents/supplier_evaluation.py` (option A) or the FR-EVA agent becomes the Learning agent (option B).
-- 2026-10-20: FR-INT-1: the justification rule also applies to choosing or leaving "keep the current PO"; only ranked options can be chosen. FR-INT-3: share_others = 0 counts as meeting the ratio rule; every buyer and supplier pair in EKKO counts as one test (40 on the current data, 1 flagged, simulated). Section 8: `record_override` also takes the Evaluation case and the buyer; `get_integrity_flags` returns the number of pairs tested and override counts.
-- 2026-10-20: FR-DET-2, FR-SEL-1 to FR-SEL-3: one world for the demo scenarios: every run sees every notice on file and the scenario only picks the case shown; Evaluation takes Detection's full flagged list; spare capacity goes to flagged POs in Detection's urgency order; cheapest tie-break on equal price (fewer expected stock-out days, more spare capacity, lower LIFNR). S2 alone now recommends keeping PO 4500000432 (simulated).

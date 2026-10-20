@@ -11,7 +11,7 @@ from adapters import CsvAdapter
 from agents import integrity as integrity_cli
 from agents.action import ActionAgent
 from agents.detection import DetectionAgent
-from agents.evaluation import EvaluationAgent
+from agents.supplier_evaluation import SupplierEvaluationAgent
 from agents.run import cases_for, notices_on_file
 from integrations.sap.rpt_client import RptClient
 from scoring import integrity
@@ -58,7 +58,7 @@ def s1(adapter):
     rpt = StubRpt()
     detection = DetectionAgent(adapter=adapter, rpt_client=rpt, reasoner=lambda f: "ok").detect(
         MATNR, notices_on_file("S1", adapter.scenarios()))
-    return EvaluationAgent(adapter=adapter, rpt_client=rpt, explainer=lambda f: "ok").evaluate(
+    return SupplierEvaluationAgent(adapter=adapter, rpt_client=rpt, explainer=lambda f: "ok").evaluate(
         detection, detection["FLAGGED_POS"], cases_for("S1", adapter.scenarios()))
 
 
@@ -68,7 +68,7 @@ def case(s1):
 
 
 def keep_first_case():
-    """A minimal Evaluation case where keeping the current PO ranks #1."""
+    """A minimal Supplier Evaluation case where keeping the current PO ranks #1."""
     return {"EBELN": "4500000432", "SCORING": {"CANDIDATES": [
         {"RANK": 1, "OPTION": "KEEP_CURRENT_PO", "KEEP_EBELN": "4500000432", "LIFNR": "100103",
          "EXPECTED_COST": 149_600_000},

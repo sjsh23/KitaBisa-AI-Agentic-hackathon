@@ -6,8 +6,8 @@ import pytest
 from adapters import CsvAdapter
 from agents import llm
 from agents.detection import DetectionAgent
-from agents import evaluation, grounding
-from agents.evaluation import (EvaluationAgent, facts_for_llm, replacement_qty,
+from agents import grounding, supplier_evaluation
+from agents.supplier_evaluation import (SupplierEvaluationAgent, facts_for_llm, replacement_qty,
                                required_mentions)
 from agents.run import cases_for, format_case, format_evaluation, main, notices_on_file
 from integrations.sap.rpt_client import RptClient, RptUnavailable
@@ -48,7 +48,7 @@ def detection(adapter, scenario):
 
 
 def evaluate(adapter, scenario, p_late=None, explainer=lambda facts: "ok", **agent_args):
-    agent = EvaluationAgent(adapter=adapter, rpt_client=StubRpt(p_late), explainer=explainer,
+    agent = SupplierEvaluationAgent(adapter=adapter, rpt_client=StubRpt(p_late), explainer=explainer,
                             **agent_args)
     det = detection(adapter, scenario)
     return agent.evaluate(det, det["FLAGGED_POS"], cases_for(scenario, adapter.scenarios()))
@@ -222,7 +222,7 @@ def test_run_adds_explanation_and_check(adapter):
                 f"costs more. It rests on only {best['PAST_DELIVERIES']}. All figures are "
                 "simulated. ", "model-x")
 
-    agent = EvaluationAgent(adapter=adapter, rpt_client=StubRpt({}), explainer=explainer)
+    agent = SupplierEvaluationAgent(adapter=adapter, rpt_client=StubRpt({}), explainer=explainer)
     report = run_s1(agent, adapter)
     case = report["CASES"][0]
     assert case["EXPLANATION"].startswith("Order from supplier 100109")
@@ -242,7 +242,7 @@ def test_explanation_is_tidied_before_the_check(adapter):
                 f"{versus['EXPECTED_COST']}, {why}. Keeping the current order costs more. "
                 f"It rests on only {best['PAST_DELIVERIES']}. All figures are simulated.")
 
-    agent = EvaluationAgent(adapter=adapter, rpt_client=StubRpt({}), explainer=explainer)
+    agent = SupplierEvaluationAgent(adapter=adapter, rpt_client=StubRpt({}), explainer=explainer)
     report = run_s1(agent, adapter)
     case = report["CASES"][0]
     assert "againts" not in case["EXPLANATION"] and " against " in case["EXPLANATION"]
@@ -253,7 +253,7 @@ def test_explanation_is_tidied_before_the_check(adapter):
 
 
 def test_invented_number_is_flagged(adapter):
-    agent = EvaluationAgent(adapter=adapter, rpt_client=StubRpt({}),
+    agent = SupplierEvaluationAgent(adapter=adapter, rpt_client=StubRpt({}),
                             explainer=lambda facts: "It saves about Rp12.3 million.")
     check = run_s1(agent, adapter)["CASES"][0]["EXPLANATION_CHECK"]
     assert check["UNGROUNDED_NUMBERS"] == ["12.3"] and check["PASSED"] is False
@@ -263,7 +263,7 @@ def test_run_survives_missing_llm(adapter):
     def explainer(facts):
         raise llm.LlmUnavailable("SAP AI Core credentials (AICORE_*) are not set")
 
-    agent = EvaluationAgent(adapter=adapter, rpt_client=StubRpt({}), explainer=explainer)
+    agent = SupplierEvaluationAgent(adapter=adapter, rpt_client=StubRpt({}), explainer=explainer)
     report = run_s1(agent, adapter)
     case = report["CASES"][0]
     assert case["EXPLANATION"] is None and "AICORE_*" in case["EXPLANATION_ERROR"]
@@ -282,7 +282,7 @@ def test_cli_prints_both_agents(monkeypatch, capsys):
     assert "Replacement for PO 4500000431" in out
     main(["S1", "--no-llm", "--json"])
     data = json.loads(capsys.readouterr().out)
-    assert set(data) == {"DETECTION", "EVALUATION", "ACTION", "POS", "LLM_NOTES"}
+    assert set(data) == {"DETECTION", "SUPPLIER_EVALUATION", "ACTION", "POS", "LLM_NOTES"}
     main(["S1", "--no-llm", "--detect-only"])
     assert "Supplier Evaluation" not in capsys.readouterr().out
 
@@ -333,15 +333,15 @@ def test_exclude_flagged_suppliers_flag(adapter, monkeypatch):
     assert excluded_on["100103"] == "DISRUPTED_SUPPLIER"
     assert off_report["EXCLUDE_FLAGGED_SUPPLIERS"] is False
     assert "100103" in {r["LIFNR"] for r in off_report["CASES"][0]["SCORING"]["CANDIDATES"]}
-    assert evaluation.exclude_flagged_suppliers({}) is True                       # default
-    assert evaluation.exclude_flagged_suppliers({"GESIT_EXCLUDE_FLAGGED_SUPPLIERS": "false"}) is False
+    assert supplier_evaluation.exclude_flagged_suppliers({}) is True                       # default
+    assert supplier_evaluation.exclude_flagged_suppliers({"GESIT_EXCLUDE_FLAGGED_SUPPLIERS": "false"}) is False
 
 
 def test_masking_check_blocks_the_call(adapter, monkeypatch):
     called = []
-    monkeypatch.setattr(evaluation, "facts_for_llm",
+    monkeypatch.setattr(supplier_evaluation, "facts_for_llm",
                         lambda case, report: {"NOTE": "PT Sumber Rasa Baru is best"})
-    agent = EvaluationAgent(adapter=adapter, rpt_client=StubRpt({}),
+    agent = SupplierEvaluationAgent(adapter=adapter, rpt_client=StubRpt({}),
                             explainer=lambda facts: called.append(facts) or "x")
     case = run_s1(agent, adapter)["CASES"][0]
     assert called == [] and case["EXPLANATION"] is None
@@ -448,13 +448,13 @@ def test_s3_alone_reserves_what_s1_takes_first(adapter):
 
 
 def test_evaluation_without_the_flagged_list_fails_loudly(adapter):
-    agent = EvaluationAgent(adapter=adapter, rpt_client=StubRpt({}))
+    agent = SupplierEvaluationAgent(adapter=adapter, rpt_client=StubRpt({}))
     det = detection(adapter, "all")
-    with pytest.raises(evaluation.FlaggedListMissing, match="full list of flagged POs"):
+    with pytest.raises(supplier_evaluation.FlaggedListMissing, match="full list of flagged POs"):
         agent.evaluate(det)
-    with pytest.raises(evaluation.FlaggedListMissing, match="missing POs .*4500000433"):
+    with pytest.raises(supplier_evaluation.FlaggedListMissing, match="missing POs .*4500000433"):
         agent.evaluate(det, det["FLAGGED_POS"][:1])   # only the case to show, not the list
-    with pytest.raises(evaluation.FlaggedListMissing):
+    with pytest.raises(supplier_evaluation.FlaggedListMissing):
         agent.run(det)
 
 
@@ -480,7 +480,7 @@ def test_s3_keep_wording_names_the_remainder(adapter):
     assert facts["CANDIDATES"].endswith(f"plus keeping the {kg} kg remainder on the current order")
     assert facts["KEEP_CURRENT_ORDER"]["SUPPLIER"].startswith(f"keep the {kg} kg remainder on order")
     keep = case["SCORING"]["KEEP"]
-    assert evaluation.opening_sentence(keep, remainder=True).startswith(
+    assert supplier_evaluation.opening_sentence(keep, remainder=True).startswith(
         f"Recommend keeping the {kg} kg remainder on order 4500000433 with supplier 100104")
     assert f"Keep row = the {kg} kg remainder on PO 4500000433" in "\n".join(format_case(case))
     # S1 and S2 replace the whole PO, so their wording is unchanged.

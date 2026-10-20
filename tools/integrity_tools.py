@@ -4,7 +4,7 @@ No LLM. The override rule (FR-INT-1): choosing anything other than the #1 option
 including a new order when keeping the current PO ranked #1 and keeping it when a
 new order ranked #1, needs a written justification of at least 20 characters
 before a draft PO is created. Every override is logged as one JSON line (FR-INT-2)
-with the expected costs taken from the Evaluation result, never recomputed and
+with the expected costs taken from the Supplier Evaluation result, never recomputed and
 never taken from a prompt.
 
 Storage for now: a JSONL file at the environment variable DECISION_LOG_PATH
@@ -45,7 +45,7 @@ def option_label(row: Mapping[str, Any]) -> str:
 
 
 def recommended_label(case: Mapping[str, Any]) -> str | None:
-    """The #1 option of an Evaluation case, or None when nothing was ranked."""
+    """The #1 option of a Supplier Evaluation case, or None when nothing was ranked."""
     rows = case["SCORING"]["CANDIDATES"]
     return option_label(rows[0]) if rows else None
 
@@ -106,7 +106,7 @@ def record_override(ebeln: str, recommended: str, chosen: str, justification: st
                     now: datetime | None = None) -> str:
     """FR-INT-2: log one override and return its id.
 
-    `case` is the Evaluation case for `ebeln`; the expected costs of the recommended
+    `case` is the Supplier Evaluation case for `ebeln`; the expected costs of the recommended
     and the chosen option come from its ranked rows (the keep row included). Raises
     ValueError when the override rule is not met, when `recommended` is not the
     case's #1, or when `chosen` is not a ranked option.

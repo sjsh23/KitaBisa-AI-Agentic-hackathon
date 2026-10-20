@@ -8,7 +8,7 @@ from adapters import CsvAdapter, PoStore
 from agents.action import (NEXT_BUYER, NEXT_DONE, NEXT_MANAGER, ActionAgent, human_approvals,
                            order_parts)
 from agents.detection import DetectionAgent
-from agents.evaluation import EvaluationAgent
+from agents.supplier_evaluation import SupplierEvaluationAgent
 from agents.run import cases_for, format_action, main, notices_on_file
 from integrations.sap.rpt_client import RptClient
 from policy import AGENT, buyer, manager
@@ -40,7 +40,7 @@ def evaluation(adapter, scenario):
     rpt = StubRpt()
     detection = DetectionAgent(adapter=adapter, rpt_client=rpt, reasoner=lambda f: "ok").detect(
         MATNR, notices_on_file(scenario, adapter.scenarios()))
-    return EvaluationAgent(adapter=adapter, rpt_client=rpt, explainer=lambda f: "ok").evaluate(
+    return SupplierEvaluationAgent(adapter=adapter, rpt_client=rpt, explainer=lambda f: "ok").evaluate(
         detection, detection["FLAGGED_POS"], cases_for(scenario, adapter.scenarios()))
 
 

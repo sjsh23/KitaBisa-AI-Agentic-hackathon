@@ -79,7 +79,7 @@ Expected: `187 passed`. The tests never call the network: SAP-RPT, SAP AI Core a
 | `tests/test_supplier_score.py` | Expected-cost formula with hand-checked values (100109 in S1: 0.022 expected days, Rp178,800,000), d_late shrinkage, exclusion reasons, score, cheapest and fastest marks, split orders (capacity at, below and at zero), near tie, comparisons without negative amounts, main driver (risk or purchase) | FR-SEL-1 to FR-SEL-3 |
 | `tests/test_rpt_features.py` | Feature rows for hypothetical POs use the same definitions as `rpt_po_lines`; calendar constants match `data_gen/config.py` | FR-SEL-2, D-4 |
 | `tests/test_grounding.py` | Word limit, dashes, numbers not in the facts, negative Rp amounts, a LIFNR glued to a word, required mentions, the masking check | FR-SEL-4, D-3, PRD section 10 |
-| `tests/test_evaluation_agent.py` | Candidates and exclusions per scenario, the EXCLUDE_FLAGGED_SUPPLIERS switch, replacement quantity, no row above its spare capacity, capacity reserved across cases, facts as phrases, the reason vs the cheapest in S1 to S3 and the check failing without it, masking check blocks the call, survival without the LLM, CLI | FR-SEL-1 to FR-SEL-4, PRD section 10 |
+| `tests/test_supplier_evaluation_agent.py` | Candidates and exclusions per scenario, the EXCLUDE_FLAGGED_SUPPLIERS switch, replacement quantity, no row above its spare capacity, capacity reserved across cases, facts as phrases, the reason vs the cheapest in S1 to S3 and the check failing without it, masking check blocks the call, survival without the LLM, CLI | FR-SEL-1 to FR-SEL-4, PRD section 10 |
 | `tests/test_integrity.py` | Only BUYER03 with 100107 flagged on the simulated EKKO (40 pairs tested); k = 4, ratio 1.9 and p >= 0.01 not flagged; share_others = 0 does not crash; binomial tail equals scipy; justification 19 characters rejected, 20 accepted, 25 spaces rejected; same choice writes nothing; one log line with every field; cost difference chosen minus recommended; overriding a keep recommendation; the Action agent drafts a choice only with an override id; neutral wording; the three CLI paths. Uses a temp DECISION_LOG_PATH | FR-INT-1 to FR-INT-4, D-3 |
 
 To run one file or one test:
@@ -177,7 +177,7 @@ What to check in every table:
   first, then more SPARE kg, then the lower LIFNR",
 - S3 alone prints "Reserved for more urgent POs: 100109 10,000 kg (PO 4500000431)", so 100109
   has 2,500 kg left and is split, exactly as in `all`. S3 alone scores the S1 case first, only
-  to reserve its capacity (Evaluation step "scored only to reserve its capacity"),
+  to reserve its capacity (Supplier Evaluation step "scored only to reserve its capacity"),
 - the S1 table is the same in `agents.run all` and `agents.integrity S1` (compare the lines
   from "Replacement for PO 4500000431" to "Recommended:").
 
@@ -384,7 +384,7 @@ py -3.11 -m agents.run all
 py -3.11 -m agents.run S1 --json > "$env:TEMP\gesit_s1.json"
 ```
 
-The JSON has the parts `DETECTION`, `EVALUATION`, `ACTION`, `POS` (every PO GESIT
+The JSON has the parts `DETECTION`, `SUPPLIER_EVALUATION`, `ACTION`, `POS` (every PO GESIT
 created in the run, with its history) and `LLM_NOTES` (with `--detect-only` it is the
 detection report alone, as before). Check:
 
@@ -392,8 +392,8 @@ detection report alone, as before). Check:
 - `DETECTION.STEPS` lists `get_open_pos`, `get_inventory`, `predict_delay_risk`, in that order,
 - `DETECTION.FLAGGED_EBELN` is `["4500000431"]` plus any PO whose SAP-RPT `P_LATE` is 0.5 or more,
 - `DETECTION.REASONING_ERROR` is `null`,
-- `EVALUATION.CASES[0].SCORING.PREDICTION.FALLBACK` is `false` (SAP-RPT scored the candidates),
-- `EVALUATION.CASES[0].EXPLANATION_ERROR` is `null` and `EXPLANATION_CHECK.PASSED` is `true`,
+- `SUPPLIER_EVALUATION.CASES[0].SCORING.PREDICTION.FALLBACK` is `false` (SAP-RPT scored the candidates),
+- `SUPPLIER_EVALUATION.CASES[0].EXPLANATION_ERROR` is `null` and `EXPLANATION_CHECK.PASSED` is `true`,
 - `ACTION.CASES[0].ORDERS[0].NEXT` is `MANAGER_APPROVAL` when its `NETWR` is above
   Rp150,000,000, otherwise `BUYER_ONE_CLICK`; `POS[0].HISTORY` has no `release_po` event.
 

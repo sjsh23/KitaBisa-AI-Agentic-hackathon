@@ -144,7 +144,7 @@ def reserve(reserved: dict[str, float], table: dict[str, Any], ebeln: str,
 
 
 class FlaggedListMissing(ValueError):
-    """Evaluation was called without Detection's full list of flagged POs."""
+    """Supplier Evaluation was called without Detection's full list of flagged POs."""
 
 
 def check_flagged(detection: dict[str, Any], flagged_pos: list[dict[str, Any]] | None,
@@ -171,7 +171,7 @@ def check_flagged(detection: dict[str, Any], flagged_pos: list[dict[str, Any]] |
     return sorted(flagged_pos, key=disruption.urgency_key)
 
 
-class EvaluationAgent:
+class SupplierEvaluationAgent:
     """Ranks backup suppliers for every PO that Disruption Detection flagged."""
 
     def __init__(self, adapter: CsvAdapter | None = None, rpt_client: RptClient | None = None,

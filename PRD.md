@@ -95,7 +95,7 @@ AgentCore Memory (session state)   AgentCore Observability (traces)   Secrets Ma
 | Hosting | AgentCore Runtime | Run the agents |
 | Tools | AgentCore Gateway + Lambda (MCP) | Data access and actions |
 | Guardrails | AgentCore Policy (Cedar) | Threshold and panel rules |
-| State, audit | AgentCore Memory, AgentCore Observability, DynamoDB, S3 | Session state, traces, records |
+| State, audit | AgentCore Memory, AgentCore Observability, DynamoDB, S3 | Session state, traces, records. Local build: JSONL decision log (DECISION_LOG_PATH, default ./decision_log.jsonl, gitignored) behind the same function signatures until DynamoDB is set up |
 | Prediction | SAP-RPT-1.6 (deployment `sap-rpt-1.6`) on SAP AI Core | P(late) per PO line |
 | Explanations | Target: SAP Gen AI Hub orchestration (sap-ai-sdk-gen) with its masking and grounding modules. Now (20 Oct): the Agent LLM above, called directly on its AI Core deployment, names masked in code, no contract grounding | Masked, contract-grounded text for the buyer (FR-SEL-4, FR-SEL-5) |
 | UI | SAP Joule (Joule Studio, needs an SAP BAIP sub-account) | Buyer and manager views, as conversations in Joule |
@@ -147,17 +147,17 @@ IDs are referenced in code comments, tests and commits.
 
 ### 7.1 Supervisor (FR-SUP)
 - **FR-SUP-1** Given a trigger (scheduled scan or a supplier notice), produce a short plan (steps and which agent runs each) and log it.
-- **FR-SUP-2** Run Detection, then Evaluation, then Action, then Integrity/Evaluation as needed; stop and hand back to the human when policy denies an action.
+- **FR-SUP-2** Run Detection, then Supplier Evaluation, then Action, then Integrity Guard and Evaluation and Learning as needed; stop and hand back to the human when policy denies an action.
 - **FR-SUP-3** Deterministic path (agents-as-tools or Graph). No Swarm.
 
 ### 7.2 Disruption Detection (FR-DET)
 - **FR-DET-1** For every open PO, call `predict_delay_risk` (SAP-RPT) with the PO's feature row and context rows from history; return P(late).
-- **FR-DET-2** Flag a PO when any of: P(late) >= 0.5; a supplier delay notice; a price revision > 3% over the PO price; a capacity shortfall notice.
+- **FR-DET-2** Flag a PO when any of: P(late) >= 0.5; a supplier delay notice; a price revision > 3% over the PO price; a capacity shortfall notice. Every open PO is checked against every notice on file, whatever the trigger.
 - **FR-DET-3** For each flag compute stock-out date = today + days of cover, and the gap between the (new) expected arrival and the stock-out date.
 - **FR-DET-4** If SAP-RPT is unavailable, fall back to the supplier's reliability posterior (FR-EVA-3) and say so in the output.
 
 ### 7.3 Supplier Evaluation (FR-SEL)
-- **FR-SEL-1** Candidates = approved-panel suppliers with a valid quote for the material.
+- **FR-SEL-1** Candidates = approved-panel suppliers with a valid quote for the material. Keeping the flagged PO as it is (its own price, revised if the supplier raised it, its expected arrival and its P(late)) is ranked as one more option.
 - **FR-SEL-2** Scoring is **plain Python, deterministic**, never computed by the LLM. For candidate s and quantity Q:
   - arrival = today + LEAD_DAYS_s
   - p_late = SAP-RPT P(late) for a hypothetical PO row (supplier s, Q, today); fallback Beta posterior mean
@@ -166,21 +166,22 @@ IDs are referenced in code comments, tests and commits.
   - expected_cost = Q x NETPR_s + stockout_days x DOWNTIME_COST_PER_DAY
   - If Q > AVAILABLE_KG_NEXT_30D_s: mark "cannot cover full quantity" and evaluate a split order with the next best supplier.
   - Display score = 100 x (lowest expected_cost / expected_cost_s).
-- **FR-SEL-3** Output a ranked table with every component, plus the cheapest and the fastest supplier marked.
+  - When several POs are flagged, spare capacity is given to them in Detection's urgency order; a case's ranked table does not depend on which cases are shown.
+- **FR-SEL-3** Output a ranked table with every component, plus the cheapest and the fastest supplier marked. Cheapest and fastest are marked among new orders only. On an equal price, cheapest goes to fewer expected stock-out days, then more spare capacity, then the lower LIFNR.
 - **FR-SEL-4** The explanation (via Gen AI Hub, masking on) states in under 120 words why #1 beats the cheapest and the fastest option, using the numbers from FR-SEL-2 only. It must not invent numbers.
 - **FR-SEL-5** Explanations may cite contract terms only through Gen AI Hub grounding on the contract documents in S3.
 
 ### 7.4 Action (FR-ACT)
-- **FR-ACT-1** `draft_po` creates a PO in status DRAFT for the top candidate (or the buyer's choice) with S/4 fields filled.
+- **FR-ACT-1** `draft_po` creates a PO in status DRAFT for the top candidate (or the buyer's choice) with S/4 fields filled. If keeping the flagged PO ranks #1, no PO is drafted and the case is handed back to the buyer. Every draft states what happens to the PO it replaces: cancel it, reduce it to the quantity that still arrives on time, or keep it. The buyer makes the change in S/4; GESIT does not change the old PO.
 - **FR-ACT-2** `release_po` is allowed by policy only if NETWR <= Rp150,000,000 and the supplier is on the approved panel. Otherwise the agent calls `submit_for_approval`, and the manager approves in the UI.
 - **FR-ACT-3** One-click approve for the buyer when the PO is below the threshold.
 
 Threshold note: routine POs are 3 to 8 t of sugar, about Rp50 to 150 juta. Rp100 juta (the earlier plan) would gate about half of routine POs; Rp150 juta gates the large emergency orders (S1, S3) which is what the demo needs. Keep it a config value.
 
 ### 7.5 Integrity Guard (FR-INT)
-- **FR-INT-1** If the buyer selects a supplier other than #1, require a written justification (minimum 20 characters, free text) before the draft is created.
+- **FR-INT-1** If the buyer selects a supplier other than #1, require a written justification (minimum 20 characters, free text) before the draft is created. The justification rule also applies to choosing a new order when keeping the current PO ranked #1, and to keeping the current PO when a new order ranked #1. Options are named by LIFNR or 'keep PO <EBELN>' in the log. Only ranked options can be chosen.
 - **FR-INT-2** Log every override: timestamp, buyer, recommended supplier, chosen supplier, cost difference, justification.
-- **FR-INT-3** Pattern flag over EKKO history: flag (buyer b, supplier s) when b placed at least 5 POs with s, b's share to s is at least 2x the share of the other buyers, and a one-sided binomial test gives p < 0.01. Expected hit in the data: BUYER03 with supplier 100107.
+- **FR-INT-3** Pattern flag over EKKO history: flag (buyer b, supplier s) when b placed at least 5 POs with s, b's share to s is at least 2x the share of the other buyers, and a one-sided binomial test gives p < 0.01. Expected hit in the data: BUYER03 with supplier 100107. When no other buyer uses the supplier (share_others = 0), the pair meets the 2x rule if k > 0. Every buyer and supplier pair in EKKO counts as one test, k = 0 included (40 on the current data, 1 flagged, simulated); the output states the number of tests.
 - **FR-INT-4** Flags appear in the manager view with the evidence (counts, shares, overrides). The system flags, it never accuses or blocks the buyer.
 
 ### 7.6 Evaluation and Learning (FR-EVA)
@@ -198,18 +199,18 @@ All return JSON; amounts in IDR, quantities in KG, dates ISO.
 |---|---|---|
 | get_open_pos | matnr? | list of open PO lines |
 | get_po | ebeln | PO header, item, schedule, receipts |
-| get_supplier_history | lifnr, days=180 | receipts with delay, reliability posterior |
+| get_supplier_history | lifnr, days=180, today? | receipts with delay, reliability posterior |
 | get_quotes | matnr | quotes_asof rows |
 | get_inventory | matnr | stock, daily usage, days of cover, downtime cost |
 | get_market_price | matnr, date | PIHPS anchor price |
-| predict_delay_risk | rows[] (rpt_po_lines schema) | P(late) per row, model id, fallback flag |
-| score_suppliers | matnr, qty, need_by | ranked table (FR-SEL-2) |
-| draft_po | lifnr, matnr, qty, netpr, eindt, reason | ebeln (DRAFT) |
-| submit_for_approval | ebeln | approval request id |
-| release_po | ebeln | released or denied (policy) |
-| record_override | ebeln, recommended, chosen, justification | override id |
+| predict_delay_risk | rows[] (rpt_po_lines schema) | P(late) per row, model id, fallback flag and reason, network retries |
+| score_suppliers | matnr, qty, need_by, today?, exclude_lifnr?, reserved_kg?, current_po? | ranked table (FR-SEL-2), with the keep-the-current-PO row when current_po is given |
+| draft_po | lifnr, matnr, qty, netpr, eindt, reason, ernam, replaces?, bedat? | ebeln (DRAFT) |
+| submit_for_approval | ebeln; caller identity (from the Gateway) | approval request id |
+| release_po | ebeln; caller identity (from the Gateway) | released or denied (policy) |
+| record_override | ebeln, recommended, chosen, justification, Supplier Evaluation case, buyer (from the caller identity behind the Gateway) | override id (OVR-<EBELN>-<n>) |
 | record_outcome | ebeln, gr_date, qty | updated posterior |
-| get_integrity_flags | none | flagged buyer and supplier pairs with evidence |
+| get_integrity_flags | none | flagged buyer and supplier pairs with evidence, number of pairs tested, override counts per buyer and per chosen option |
 
 ## 9. Policies (Cedar, AgentCore Policy)
 - **POL-1** Deny `release_po` when amount > 150,000,000 unless the principal has role manager.
@@ -238,7 +239,7 @@ Each policy has a test that shows one allow and one deny.
 2. Architecture diagram, AWS and SAP in one picture (2:00-3:00).
 3. Live (3:00-9:00):
    a. SAP-RPT scores open POs; S1 PO flagged (supplier 100101, 7-day delay, stock-out in 6 days).
-   b. Supervisor plan shown; Evaluation ranks backups; explanation of why #1 beats cheapest and fastest.
+   b. Supervisor plan shown; Supplier Evaluation ranks backups; explanation of why #1 beats cheapest and fastest.
    c. Replacement PO above Rp150 juta: Policy denies release, manager approves (human-in-the-loop).
    d. Buyer tries a lower-scored supplier: Integrity Guard asks for justification; manager view shows the BUYER03 / 100107 pattern.
    e. Results table vs baselines (Monte Carlo) and the reliability chart for 100108.
@@ -297,6 +298,7 @@ Mentoring questions: Smartsheet on Mondays 12, 19, 26 Oct before 16:00 WIB.
 - How did you validate the synthetic data? (PIHPS prices, validation report, assumptions)
 - How does it scale to hundreds of SKUs and suppliers? (scoring is per SKU and cheap; RPT batches up to 128 rows per call)
 - What does a decision cost? (measured, NFR-3)
+- What happens to the old PO? Deck sentence: "When GESIT replaces a PO it says what happens to the old one: cancel it (S1), or cut it to the part that still arrives on time (S3, 12,000 to 4,800 kg). The buyer makes that change in S/4; GESIT only drafts the new PO."
 
 ## 17. Open decisions
 - Approval threshold: Rp150 juta proposed (section 7.4), confirm with team.
@@ -330,3 +332,10 @@ Decided on 8 Oct 2026 (team to object by 9 Oct, otherwise these stand):
 - 2026-10-11: S3 in `scenarios.json` now states the remainder explicitly (`remainder_kg`, `original_eindt`, `remainder_delay_days`, `remainder_eindt`; `S3_REMAINDER_DELAY_DAYS = 10` in `data_gen/config.py`, an assumption under D-4). Disruption Detection computes the S3 gap for the remainder (+5 days for 7,200 kg, simulated; FR-DET-3). No CSV changed. No requirement changed.
 - 2026-10-20: Agent reasoning model changed from Gemini Flash to GPT-5.4 on SAP Gen AI Hub (Strands OpenAI provider on the AI Core deployment), with Claude Sonnet 4.6 on the same Gen AI Hub as fallback (Strands Bedrock provider on the deployment's Converse endpoint). Sections 5, 10, 11 (NFR-4 wording), 15 and 17 updated; the Gemini access path decision closed; `GEMINI_API_KEY` no longer used. Reason: Gemini free-tier quota and overloads. No FR or POL changed.
 - 2026-10-20: Corrected stale text against the code: section 5 Prediction row names the `sap-rpt-1.6` deployment (was sap-rpt-1-small); section 5 Explanations row says what runs now (Gen AI Hub model called directly, masking in code, no grounding) and what is the target (orchestration); section 14 status column filled in (market type id confirmed 8 Oct, milestone status as of 20 Oct). No requirement changed.
+- 2026-10-20: FR-SEL-1, FR-SEL-3, FR-ACT-1: keeping the flagged PO as it is is ranked as one more option with the same expected-cost formula; cheapest and fastest are marked among new orders only; nothing is drafted when keeping ranks #1. `score_suppliers` gets the optional input `current_po` (section 8).
+- 2026-10-20: FR-ACT-1: every case says what happens to the old PO (cancel, reduce to the on-time part, or keep); the buyer makes the change in S/4, GESIT does not.
+- 2026-10-20: Section 8: tool inputs and outputs brought in line with the code: `get_supplier_history` today?; `predict_delay_risk` returns the fallback reason and network retries; `score_suppliers` takes today?, exclude_lifnr?, reserved_kg?, current_po?; `draft_po` takes ernam, replaces?, bedat?; `submit_for_approval` and `release_po` use the caller identity from the Gateway (POL-1, POL-4).
+- 2026-10-20: FR-SUP-2 names Supplier Evaluation and Evaluation and Learning apart; the code's Supplier Evaluation agent is renamed agents/supplier_evaluation.py (option A).
+- 2026-10-20: FR-INT-1: the justification rule also applies to choosing or leaving "keep the current PO"; only ranked options can be chosen. FR-INT-3: share_others = 0 counts as meeting the ratio rule; every buyer and supplier pair in EKKO counts as one test (40 on the current data, 1 flagged, simulated). Section 8: `record_override` also takes the Supplier Evaluation case and the buyer; `get_integrity_flags` returns the number of pairs tested and override counts.
+- 2026-10-20: FR-DET-2, FR-SEL-1 to FR-SEL-3: one world for the demo scenarios: every run sees every notice on file and the scenario only picks the case shown; Supplier Evaluation takes Detection's full flagged list; spare capacity goes to flagged POs in Detection's urgency order; cheapest tie-break on equal price (fewer expected stock-out days, more spare capacity, lower LIFNR). S2 alone now recommends keeping PO 4500000432 (simulated).
+- 2026-10-20: Proposals 4 to 9 applied by team decision (`docs/prd_change_proposals.md`; items 1 to 3 not agreed, not applied). Also: section 5 "State, audit" row notes the local JSONL decision log (item 8); section 16 adds "What happens to the old PO?" with the deck sentence (item 5); section 12 step 3b and the section 8 `record_override` row say "Supplier Evaluation" instead of "Evaluation" (item 7).

@@ -26,7 +26,7 @@ from adapters import default_adapter
 from agents import action, llm
 from agents.action import ActionAgent, human_approvals
 from agents.detection import DetectionAgent
-from agents.evaluation import EvaluationAgent
+from agents.supplier_evaluation import SupplierEvaluationAgent
 from integrations.sap.rpt_client import RptClient
 from scoring import disruption, supplier_score
 
@@ -61,7 +61,7 @@ def notices_on_file(scenario: str, scenarios: list[dict[str, Any]]) -> list[dict
 
 def cases_for(scenario: str, scenarios: list[dict[str, Any]]) -> list[str] | None:
     """EBELNs whose case a scenario shows: the scenario's own PO, or None (all) for
-    `all` and `scan`. Evaluation still scores against the full flagged list."""
+    `all` and `scan`. Supplier Evaluation still scores against the full flagged list."""
     if scenario.upper() in ("ALL", "SCAN"):
         return None
     return [n["ebeln"] for n in notices_for(scenario, scenarios)]
@@ -327,7 +327,7 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     # The full flagged list decides exclusions and capacity; the scenario picks the cases shown.
-    evaluator = EvaluationAgent(adapter=adapter, rpt_client=rpt_client)
+    evaluator = SupplierEvaluationAgent(adapter=adapter, rpt_client=rpt_client)
     shown = cases_for(args.scenario, adapter.scenarios())
     evaluation = (evaluator.evaluate(report, report["FLAGGED_POS"], shown) if args.no_llm
                   else evaluator.run(report, report["FLAGGED_POS"], shown))
@@ -337,7 +337,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.approve:
         actions = human_approvals(actions, actor.store)
     if args.json:
-        print(json.dumps({"DETECTION": report, "EVALUATION": evaluation, "ACTION": actions,
+        print(json.dumps({"DETECTION": report, "SUPPLIER_EVALUATION": evaluation, "ACTION": actions,
                           "POS": actor.store.all(), "LLM_NOTES": llm_notes()}, indent=2))
     else:
         print(format_report(report) + "\n\n" + format_evaluation(evaluation)
