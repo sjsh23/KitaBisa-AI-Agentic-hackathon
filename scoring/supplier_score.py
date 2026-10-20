@@ -24,7 +24,8 @@ Keeping the current PO is ranked in the same table (OPTION KEEP_CURRENT_PO, not
 yet in FR-SEL-1, proposed in docs/prd_change_proposals.md): the same formula with
 the PO's own price (the revised one after a price increase), its expected arrival
 and its P(late). If it ranks #1, GESIT recommends no new order. The cheapest and
-fastest marks are given among the new orders only (the FR-SEL-4 baselines).
+fastest marks are given among the new orders only (the FR-SEL-4 baselines); the
+fastest only among those that cover the full quantity from one supplier (FR-SEL-3).
 
 Comparisons between #1 and another row are computed here too, so the LLM only
 quotes them: differences are always positive amounts with a direction word, a
@@ -225,6 +226,34 @@ def score_candidates(quotes: dict[str, dict[str, Any]], qty: float, p_late: dict
     return rank(rows)
 
 
+# Which new order is "fastest" (FR-SEL-3). Only a new order that covers the full quantity
+# from one supplier can be (COVERS_FULL_QTY, the same capacity test that makes a row a
+# split); a split stays ranked but is never marked fastest. Among those, these fields in
+# order, lowest first, each with the table column that shows it. After LEAD_DAYS they are
+# the ranking order of `rank`, so on an equal lead time the better-ranked row wins.
+FASTEST_SCOPE = "new orders that can cover the full quantity from one supplier"
+FASTEST_ORDER = (("LEAD_DAYS", "LEAD"), ("EXPECTED_COST", "EXPECTED"), ("NETPR", "NETPR"),
+                 ("LIFNR", "LIFNR"))
+NO_FASTEST_NOTE = "none can cover the full quantity"
+
+
+def can_be_fastest(row: dict[str, Any]) -> bool:
+    """FASTEST_SCOPE: a new order that needs no split."""
+    return row.get("OPTION", OPTION_NEW_PO) == OPTION_NEW_PO and bool(row["COVERS_FULL_QTY"])
+
+
+def fastest_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    """Sort key for the "fastest" mark, built from FASTEST_ORDER."""
+    return tuple(row[field] for field, _ in FASTEST_ORDER)
+
+
+def fastest_rule_text() -> str:
+    """The fastest rule in words, from FASTEST_SCOPE and FASTEST_ORDER, so it cannot drift."""
+    first, *ties = [column for _, column in FASTEST_ORDER]
+    return (f"Fastest rule: shortest {first} among {FASTEST_SCOPE}; on an equal {first}, lower "
+            f"{ties[0]} first, " + ", ".join(f"then lower {t}" for t in ties[1:]) + ".")
+
+
 def cheapest_key(row: dict[str, Any]) -> tuple[float, float, float, str]:
     """Which new order is "cheapest": lowest NETPR; on an equal price fewer expected
     stock-out days, then more spare capacity, then the lower LIFNR (FR-SEL-3)."""
@@ -247,8 +276,8 @@ def rank(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     lowest = rows[0]["EXPECTED_COST"]
     new = [i for i, r in enumerate(rows) if r["OPTION"] == OPTION_NEW_PO]
     cheapest = min(new, key=lambda i: cheapest_key(rows[i]), default=None)
-    # min() keeps the first of equal values, so a tie in lead time goes to the better rank.
-    fastest = min(new, key=lambda i: rows[i]["LEAD_DAYS"], default=None)
+    fastest = min((i for i in new if can_be_fastest(rows[i])),
+                  key=lambda i: fastest_key(rows[i]), default=None)
     return [
         {"RANK": i + 1, **row,
          "SCORE": round(100.0 * lowest / row["EXPECTED_COST"], 1),

@@ -96,6 +96,8 @@ GLUED_NUMBER_WORD = re.compile(r"(?<=\d)(?!(?:st|nd|rd|th)\b)(?=[a-z]{2,}\b)")
 # Sentence or clause punctuation with no space after it ("stock.Supplier", "late,so").
 GLUED_SENTENCE = re.compile(r"(?<=[a-z\d%)])([.!?;:])(?=[A-Z])")
 GLUED_COMMA = re.compile(r"(?<=[A-Za-z\d%)])([,;])(?=[A-Za-z])")
+# Amounts are written as in the tables, "Rp178,446,429"; a model that adds a space gets it removed.
+SPACE_AFTER_RP = re.compile(r"\bRp[ \t]+(?=\d)")
 SPACE_BEFORE_PUNCT = re.compile(r"(?<=\w)[ \t]+(?=[,.;:!?](?:\s|$))")
 EXTRA_SPACES = re.compile(r"(?<=\S)[ \t]{2,}")
 TRAILING_SPACES = re.compile(r"[ \t]+(?=\n)")
@@ -167,6 +169,7 @@ def tidy_text(text: str, *sources: Any) -> tuple[str, list[str]]:
         (GLUED_NUMBER_WORD, " ", "space between number and word"),
         (GLUED_SENTENCE, r"\1 ", "space after punctuation"),
         (GLUED_COMMA, r"\1 ", "space after comma"),
+        (SPACE_AFTER_RP, "Rp", "space after Rp removed"),
         (SPACE_BEFORE_PUNCT, "", "space before punctuation removed"),
         (EXTRA_SPACES, " ", "double space removed"),
         (TRAILING_SPACES, "", "space at line end removed"),

@@ -219,6 +219,54 @@ def test_keep_goes_first_on_equal_expected_cost():
     assert rows[0]["OPTION"] == ss.OPTION_KEEP and rows[0]["EXPECTED_COST"] == rows[1]["EXPECTED_COST"]
 
 
+def _fastest(quotes, p_late):
+    rows = ss.score_candidates(quotes, 5_000, p_late, {k: 3.0 for k in quotes}, TODAY, STOCKOUT,
+                               DOWNTIME)
+    return next(r["LIFNR"] for r in rows if r["IS_FASTEST"])
+
+
+def test_fastest_rule_text_matches_the_key():
+    text = ss.fastest_rule_text()
+    assert text == ("Fastest rule: shortest LEAD among new orders that can cover the full "
+                    "quantity from one supplier; on an equal LEAD, lower EXPECTED first, then "
+                    "lower NETPR, then lower LIFNR.")
+    assert [f for f, _ in ss.FASTEST_ORDER] == ["LEAD_DAYS", "EXPECTED_COST", "NETPR", "LIFNR"]
+
+
+def test_fastest_tie_breaks_follow_the_printed_order():
+    # Equal LEAD (4 days, 2 before stock-out): the lower EXPECTED wins, in any quote order.
+    a, b = quote("100102", 18_400, 4), quote("100109", 17_550, 4)
+    for quotes in ({"100102": a, "100109": b}, {"100109": b, "100102": a}):
+        assert _fastest(quotes, {"100102": 0.0, "100109": 0.0}) == "100109"   # cheaper, no risk
+        assert _fastest(quotes, {"100102": 0.0, "100109": 0.9}) == "100102"   # 100109 risk cost
+    # Equal LEAD, EXPECTED and NETPR: the lower LIFNR decides.
+    a, b = quote("100106", 17_500, 3), quote("100108", 17_500, 3)
+    for quotes in ({"100108": b, "100106": a}, {"100106": a, "100108": b}):
+        assert _fastest(quotes, {"100106": 0.0, "100108": 0.0}) == "100106"
+
+
+def test_a_split_row_is_never_marked_fastest():
+    # S has the shortest LEAD but only 2,000 of 5,000 kg: it stays ranked as a split, and the
+    # next shortest LEAD that covers the full quantity from one supplier is marked instead.
+    quotes = {"S": quote("S", 17_550, 3, available=2_000.0), "P": quote("P", 17_450, 5)}
+    rows = ss.score_candidates(quotes, 5_000, {"S": 0.0, "P": 0.0}, {"S": 3.0, "P": 3.0},
+                               TODAY, STOCKOUT, DOWNTIME)
+    split = next(r for r in rows if r["LIFNR"] == "S")
+    assert split["SPLIT_WITH"]["LIFNR"] == "P" and split["CAPACITY_NOTE"] == ss.CANNOT_COVER_NOTE
+    assert not split["IS_FASTEST"] and not ss.can_be_fastest(split)
+    assert [r["LIFNR"] for r in rows if r["IS_FASTEST"]] == ["P"]
+
+
+def test_no_fastest_when_nobody_covers_the_full_quantity():
+    quotes = {"A": quote("A", 17_550, 3, available=3_000.0),
+              "B": quote("B", 17_450, 4, available=3_000.0)}
+    rows = ss.score_candidates(quotes, 5_000, {"A": 0.0, "B": 0.0}, {"A": 3.0, "B": 3.0},
+                               TODAY, STOCKOUT, DOWNTIME)
+    assert rows and all(r["SPLIT_WITH"] for r in rows)
+    assert not any(r["IS_FASTEST"] for r in rows)
+    assert [r["LIFNR"] for r in rows if r["IS_CHEAPEST"]] == ["B"]   # cheapest is unchanged
+
+
 def _cheapest(quotes, p_late):
     rows = ss.score_candidates(quotes, 5_000, p_late, {k: 3.0 for k in quotes}, TODAY, STOCKOUT,
                                DOWNTIME)

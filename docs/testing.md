@@ -2,7 +2,8 @@
 
 Step-by-step checks for what is built so far: the Disruption Detection agent
 (FR-DET-1 to FR-DET-4), the Supplier Evaluation agent (FR-SEL-1 to FR-SEL-4), the Action
-agent (FR-ACT-1 to FR-ACT-3), the Integrity Guard (FR-INT-1 to FR-INT-4) and the pieces under them. All data is simulated.
+agent (FR-ACT-1 to FR-ACT-3), the Integrity Guard (FR-INT-1 to FR-INT-4), the Monte Carlo
+against baselines (FR-EVA-4) and the pieces under them. All data is simulated.
 
 Commands are for Windows PowerShell on the dev machine, where Python is started
 with `py -3.11`. On macOS or Linux use `python` instead. Run everything from the
@@ -67,7 +68,7 @@ git diff --cached --name-only
 py -3.11 -m pytest -q
 ```
 
-Expected: `187 passed`. The tests never call the network: SAP-RPT, SAP AI Core and the reasoning models are replaced by fakes.
+Expected: `223 passed` (20 October 2026). The tests never call the network: SAP-RPT, SAP AI Core and the reasoning models are replaced by fakes.
 
 | Test file | What it proves | Requirements |
 |---|---|---|
@@ -81,6 +82,7 @@ Expected: `187 passed`. The tests never call the network: SAP-RPT, SAP AI Core a
 | `tests/test_grounding.py` | Word limit, dashes, numbers not in the facts, negative Rp amounts, a LIFNR glued to a word, required mentions, the masking check | FR-SEL-4, D-3, PRD section 10 |
 | `tests/test_supplier_evaluation_agent.py` | Candidates and exclusions per scenario, the EXCLUDE_FLAGGED_SUPPLIERS switch, replacement quantity, no row above its spare capacity, capacity reserved across cases, facts as phrases, the reason vs the cheapest in S1 to S3 and the check failing without it, masking check blocks the call, survival without the LLM, CLI | FR-SEL-1 to FR-SEL-4, PRD section 10 |
 | `tests/test_integrity.py` | Only BUYER03 with 100107 flagged on the simulated EKKO (40 pairs tested); k = 4, ratio 1.9 and p >= 0.01 not flagged; share_others = 0 does not crash; binomial tail equals scipy; justification 19 characters rejected, 20 accepted, 25 spaces rejected; same choice writes nothing; one log line with every field; cost difference chosen minus recommended; overriding a keep recommendation; the Action agent drafts a choice only with an override id; neutral wording; the three CLI paths. Uses a temp DECISION_LOG_PATH | FR-INT-1 to FR-INT-4, D-3 |
+| `tests/test_monte_carlo.py` | The four strategies match the real recommendation (SAP-RPT replayed from a recorded run); SAP-RPT called once per case and never in the loop, no LLM call; same seed same result, other seed differs; an on-time world costs only the purchase; common random numbers; quantity-weighted stock-out for a split; a case without a fastest row stops; footer text; nothing outside `eval/` uses `data_gen/world.py`, `_truth/` or `eval` | FR-EVA-4, D-1, D-3 |
 
 To run one file or one test:
 
@@ -143,8 +145,8 @@ numbers differ from a run with the real SAP-RPT):
 |---|---|---|---|---|
 | `S1` | 4500000431, 10,000 kg | 100109, expected cost Rp179,397,321 | 100105 | 100109 |
 | `S2` | 4500000432, 8,000 kg | keep PO 4500000432, Rp149,600,000 | 100105 | 100102 |
-| `S3` | 4500000433, 7,200 kg (the late remainder only) | 100109 split (2,500 kg, plus 4,700 kg from 100102), Rp150,504,554 | 100105 | 100109 |
-| `all` | 4500000431, then 4500000433, then 4500000432 | the three rows above, identical | 100105 | 100109, 100109, 100102 |
+| `S3` | 4500000433, 7,200 kg (the late remainder only) | 100109 split (2,500 kg, plus 4,700 kg from 100102), Rp150,504,554 | 100105 | 100102 (100109 is a split, so not fastest) |
+| `all` | 4500000431, then 4500000433, then 4500000432 | the three rows above, identical | 100105 | 100109, 100102, 100102 |
 
 Every table also ranks keeping the flagged PO as it is (NOTE "keep PO ... as it is, no new
 order", SPARE "-"): its own price (the revised Rp18,700 in S2), its expected arrival and its
@@ -167,6 +169,10 @@ What to check in every table:
   (EXCLUDE_FLAGGED_SUPPLIERS)" (the case's own keep row is still ranked),
 - rows are sorted by EXPECTED, and EXPECTED = PURCHASE + RISK on every row,
 - "cheapest new order" and "fastest new order" never point at the keep row,
+- "fastest" never sits on a row that says "cannot cover full quantity" (FR-SEL-3); when every
+  new order is a split, the line reads "fastest new order: none can cover the full quantity",
+  and the footer says "Fastest rule: shortest LEAD among new orders that can cover the full
+  quantity from one supplier; ...",
 - the SPARE kg column is never below the kilograms a row is ranked for. A row with
   less spare capacity than needed says "cannot cover full quantity: split ... kg here +
   ... kg from ...", and the two parts add up to the needed quantity,
@@ -241,6 +247,51 @@ Every path that gets past the rule ends with the flags table: one row, BUYER03 w
 ... flagged: 1", and the sentence "This is a statistic, not a finding." Use `--choose keep`
 to keep the current PO instead of the #1 new order (also an override). A supplier that is
 not in the ranked table (for example 100111, off the panel) is rejected.
+
+### Monte Carlo against baselines (FR-EVA-4)
+
+A separate command: `agents.run` never shows it, because only `eval/` may use the simulated
+world's true behaviour (`data_gen/world.py`, D-1). It builds the three cases once, as
+`agents.run all` does (no LLM), then draws 1,000 outcomes per case from the true behaviour
+and compares four strategies taken from the same ranked table: GESIT (#1), ALWAYS_CHEAPEST,
+ALWAYS_FASTEST (full quantity from one supplier) and KEEP_CURRENT_PO.
+
+```powershell
+py -3.11 -m eval.monte_carlo --scenario all --runs 1000 --seed 42
+py -3.11 -m eval.monte_carlo --scenario S3 --runs 1000 --seed 7
+py -3.11 -m eval.monte_carlo --scenario all --json "$env:TEMP\gesit_mc.json"
+```
+
+`--scenario` takes S1, S2, S3 or all (all adds a TOTAL table). `--json` writes the same
+numbers to a file; give a path outside the repository. Without credentials the predictions
+use the posterior fallback, so the footer says `beta-posterior-fallback (fallback)`.
+
+Expected mean realised cost, seed 42, 1,000 runs, posterior fallback (simulated data):
+
+| Scenario | GESIT | ALWAYS_CHEAPEST | ALWAYS_FASTEST | KEEP_CURRENT_PO |
+|---|---|---|---|---|
+| S1 | Rp177,900,000 (100109) | Rp214,700,000 (100105) | Rp177,900,000 (100109, same as GESIT) | Rp1,119,950,000 |
+| S2 | Rp158,300,000 (keep PO 4500000432) | Rp179,800,000 (100105) | Rp147,500,000 (100102) | same as GESIT |
+| S3 | Rp131,384,167 (100109 2,500 kg + 100102 4,700 kg) | Rp165,840,000 (100105) | Rp132,780,000 (100102) | Rp878,430,000 |
+| TOTAL | Rp467,584,167 | Rp560,340,000 | Rp458,180,000 | Rp2,156,680,000 |
+
+With the real SAP-RPT-1.6 (step 7) GESIT picks 100108 for S3, and S3 becomes
+Rp208,950,000 for GESIT against Rp132,780,000 for ALWAYS_FASTEST: SAP-RPT predicts P(late)
+0.21 for 100108, while its true late rate after the drift is 0.45 (simulated). Report this
+as it is; nothing is tuned to favour GESIT.
+
+What to check:
+
+- each scenario table has the four strategies, then "GESIT vs" with MEAN DIFF (GESIT minus the
+  baseline; negative means GESIT costs less), a 95% interval, GESIT CHEAPER and SAME,
+- strategies that order the same thing have identical numbers and SAME 100.0% (S1 GESIT and
+  ALWAYS_FASTEST, S2 GESIT and KEEP_CURRENT_PO),
+- the footer says "simulated data", the seed and runs, the delay model used for the
+  predictions, "No SAP-RPT or LLM call inside the loop", the quantity-weighted stock-out
+  definition and Rp150,000,000 per day of downtime,
+- the same command twice gives the same output; another `--seed` changes the numbers but,
+  on 20 October 2026, not the ranking of the strategies,
+- a run takes about 16 s, almost all of it the SAP-RPT predictions; the loop is under 1 s.
 
 ## Step 5: SAP-RPT-1.6 alone (network)
 
@@ -390,7 +441,8 @@ detection report alone, as before). Check:
 
 - `DETECTION.PREDICTION.FALLBACK` is `false`,
 - `DETECTION.STEPS` lists `get_open_pos`, `get_inventory`, `predict_delay_risk`, in that order,
-- `DETECTION.FLAGGED_EBELN` is `["4500000431"]` plus any PO whose SAP-RPT `P_LATE` is 0.5 or more,
+- `DETECTION.FLAGGED_EBELN` is `["4500000431", "4500000433", "4500000432"]` (every notice on
+  file, since 20 Oct) plus any PO whose SAP-RPT `P_LATE` is 0.5 or more,
 - `DETECTION.REASONING_ERROR` is `null`,
 - `SUPPLIER_EVALUATION.CASES[0].SCORING.PREDICTION.FALLBACK` is `false` (SAP-RPT scored the candidates),
 - `SUPPLIER_EVALUATION.CASES[0].EXPLANATION_ERROR` is `null` and `EXPLANATION_CHECK.PASSED` is `true`,
@@ -413,6 +465,9 @@ After steps 5 to 7, update `WORKING.md` (status of section 7.2, done log) with:
 3. Supplier Evaluation: the #1, cheapest and fastest supplier per scenario, and every
    explanation check that did not pass.
 4. Any scenario whose flagged list differs from step 4, and why (a real SAP-RPT `P_LATE` at or above 0.5 adds a "PREDICTED_LATE" flag, which is expected behaviour).
+5. Monte Carlo (`py -3.11 -m eval.monte_carlo --scenario all`): the mean cost per strategy per
+   scenario and the TOTAL, the delay model named in the footer, and every scenario where a
+   baseline beats GESIT (its MEAN DIFF is positive and its interval does not include 0).
 
 ## Not covered yet
 

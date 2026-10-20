@@ -11,6 +11,7 @@ from agents.supplier_evaluation import (SupplierEvaluationAgent, facts_for_llm, 
                                required_mentions)
 from agents.run import cases_for, format_case, format_evaluation, main, notices_on_file
 from integrations.sap.rpt_client import RptClient, RptUnavailable
+from scoring import supplier_score
 from tools import get_market_price, get_quotes, score_suppliers
 
 MATNR = "RM-GULA-001"
@@ -161,14 +162,14 @@ def test_llm_facts_are_masked_and_precomputed(adapter):
     assert "BUYER" not in text and "ERNAM" not in text
     # Ready-made phrases: a space around every number, no negative amount (FR-SEL-4).
     assert facts["RECOMMENDED"]["SUPPLIER"] == "supplier 100109"
-    assert facts["RECOMMENDED"]["EXPECTED_COST"].startswith("expected cost Rp ")
+    assert facts["RECOMMENDED"]["EXPECTED_COST"].startswith("expected cost Rp")
     # The first sentence is built in code (the model wrote "expected cost is expected cost").
     assert facts["OPENING"] == ("Recommend supplier 100109 at an expected cost of "
                                 + facts["RECOMMENDED"]["EXPECTED_COST"].removeprefix("expected cost ")
                                 + ".")
     assert not grounding.NEGATIVE_AMOUNT.search(text)
     cheapest = facts["CHEAPEST"]["VS_RECOMMENDED"]
-    assert cheapest["PURCHASE"] == "purchase saving Rp 1,000,000"   # 17,450 vs 17,550 x 10,000 kg
+    assert cheapest["PURCHASE"] == "purchase saving Rp1,000,000"   # 17,450 vs 17,550 x 10,000 kg
     assert cheapest["EXPECTED_COST"].endswith("more)")
 
 
@@ -184,7 +185,7 @@ def test_reason_vs_cheapest_is_given(adapter, scenario):
     rows = {r["LIFNR"]: r for r in case["SCORING"]["CANDIDATES"]}
     cheap, best = rows[case["SCORING"]["CHEAPEST"]], rows[case["SCORING"]["RECOMMENDED"]]
     why = facts["CHEAPEST"]["VS_RECOMMENDED"]["WHY"]
-    assert why.startswith(f"mainly from extra risk cost Rp {cheap['RISK_COST'] - best['RISK_COST']:,} (")
+    assert why.startswith(f"mainly from extra risk cost Rp{cheap['RISK_COST'] - best['RISK_COST']:,} (")
     # In S2 keeping the PO can be #1 (S1 takes 100109's spare capacity first).
     label = (f"the current order {best['KEEP_EBELN']}" if best["OPTION"] == "KEEP_CURRENT_PO"
              else f"supplier {best['LIFNR']}")
@@ -380,7 +381,7 @@ def test_keep_wins_in_all_when_the_best_backup_is_taken(adapter):
     assert facts["RECOMMENDED_IS_KEEP"] is True and "KEEP_CURRENT_ORDER" not in facts
     assert facts["RECOMMENDED"]["SUPPLIER"].startswith("keep order 4500000432")
     assert facts["OPENING"] == ("Recommend keeping order 4500000432 with supplier 100103 and "
-                                "placing no new order, at an expected cost of Rp 149,600,000.")
+                                "placing no new order, at an expected cost of Rp149,600,000.")
     assert "for the current order 4500000432" in facts["CHEAPEST"]["VS_RECOMMENDED"]["WHY"]
     assert "keeping the current order" in [label for label, _ in required_mentions(facts)]
     assert "Recommended: keep PO 4500000432 (100103), no new order" in format_evaluation(report)
@@ -391,7 +392,7 @@ def test_keep_comparison_is_given_when_a_new_order_wins(adapter):
     facts = facts_for_llm(report["CASES"][0], report)
     versus = facts["KEEP_CURRENT_ORDER"]["VS_RECOMMENDED"]
     assert facts["RECOMMENDED_IS_KEEP"] is False
-    assert versus["WHY"].startswith("mainly from extra risk cost Rp ")   # 5 days after stock-out
+    assert versus["WHY"].startswith("mainly from extra risk cost Rp")   # 5 days after stock-out
     assert facts["CANDIDATES"] == "6 suppliers ranked, plus keeping the current order"
 
 
@@ -401,10 +402,17 @@ def test_comparison_sentences_are_built_in_code(adapter):
     report = evaluate(adapter, "all", {})
     cases = {c["EBELN"]: facts_for_llm(c, report) for c in report["CASES"]}
     keep = cases["4500000431"]["KEEP_CURRENT_ORDER"]["VS_RECOMMENDED"]["SENTENCE"]
-    assert keep.startswith("Keeping the current order 4500000431 would cost Rp ")
+    assert keep.startswith("Keeping the current order 4500000431 would cost Rp")
     assert "expected cost" not in keep.split(", mainly")[0] and keep.endswith(").")
-    tie = cases["4500000433"]["FASTEST"]["VS_RECOMMENDED"]["SENTENCE"]
-    assert tie.startswith("The fastest option, supplier 100109, is a near tie: it would cost Rp 125,000 more")
+    # FR-SEL-3: the 100109 split is no longer the fastest in S3; 100102 covers all 7,200 kg.
+    fastest = cases["4500000433"]["FASTEST"]["VS_RECOMMENDED"]["SENTENCE"]
+    assert fastest.startswith("The fastest option, supplier 100102, would cost Rp")
+    # The near-tie wording, on the 100109 split row that is Rp125,000 above #1.
+    s3 = next(c for c in report["CASES"] if c["EBELN"] == "4500000433")
+    rows = {r["LIFNR"]: r for r in s3["SCORING"]["CANDIDATES"]}
+    tie = supplier_evaluation._versus_facts(rows["100109"], s3["SCORING"]["CANDIDATES"][0],
+                                            s3["QTY"], "Supplier 100109,")["VS_RECOMMENDED"]
+    assert tie["SENTENCE"].startswith("Supplier 100109, is a near tie: it would cost Rp125,000 more")
     for facts in cases.values():
         for key in ("KEEP_CURRENT_ORDER", "CHEAPEST", "FASTEST"):
             if key in facts:
@@ -469,6 +477,106 @@ def test_cheapest_tie_break_is_stable(adapter):
     assert table["CHEAPEST"] == "100103"
 
 
+@pytest.mark.parametrize("scenario", ["S1", "S2", "S3"])
+def test_fastest_rule_is_printed_under_every_table(adapter, scenario):
+    case = evaluate(adapter, scenario, {})["CASES"][0]
+    lines = format_case(case)
+    rule = next(line for line in lines if line.startswith("Fastest rule: "))
+    assert rule == supplier_score.fastest_rule_text()
+    assert lines.index(rule) == next(i for i, line in enumerate(lines)
+                                     if line.startswith("Cheapest tie-break: ")) + 1
+    # The printed rule picks the row the table marks fastest, and that row needs no split.
+    scope = [r for r in case["SCORING"]["CANDIDATES"] if supplier_score.can_be_fastest(r)]
+    fastest = min(scope, key=supplier_score.fastest_key)
+    assert fastest["LIFNR"] == case["SCORING"]["FASTEST"] and fastest["COVERS_FULL_QTY"]
+
+
+def test_s1_fastest_is_unchanged(adapter):
+    # 100109 has 12,500 kg spare for 10,000 kg, so it is still the fastest in S1.
+    table = evaluate(adapter, "S1", {})["CASES"][0]["SCORING"]
+    assert table["FASTEST"] == "100109"
+    row = next(r for r in table["CANDIDATES"] if r["IS_FASTEST"])
+    assert (row["LEAD_DAYS"], row["COVERS_FULL_QTY"]) == (3, True)
+
+
+@pytest.mark.parametrize("scenario", ["S2", "S3"])
+def test_split_100109_is_not_fastest_in_s2_and_s3(adapter, scenario):
+    # 100109 has 2,500 kg left after S1, so it is a split and 100102 (3 days, 50,000 kg) is fastest.
+    table = evaluate(adapter, scenario, {})["CASES"][0]["SCORING"]
+    rows = {r["LIFNR"]: r for r in table["CANDIDATES"] if r["OPTION"] == "NEW_PO"}
+    assert rows["100109"]["SPLIT_WITH"] and not rows["100109"]["IS_FASTEST"]
+    assert table["FASTEST"] == "100102" and rows["100102"]["LEAD_DAYS"] == 3
+    assert rows["100102"]["COVERS_FULL_QTY"]
+
+
+def test_no_fastest_option_is_explained_without_error(adapter):
+    # 60,000 kg: no backup has that much spare, so every new order is a split.
+    report = evaluate(adapter, "S1", {})
+    case = report["CASES"][0]
+    table = score_suppliers(MATNR, 60_000, case["NEED_BY"],
+                            exclude_lifnr=["100101", "100103", "100104"], adapter=adapter,
+                            client=StubRpt({}))
+    case = {**case, "QTY": 60_000.0, "SCORING": table}
+    assert table["CANDIDATES"] and table["FASTEST"] is None
+    assert all(r["SPLIT_WITH"] for r in table["CANDIDATES"])
+    assert "fastest new order: none can cover the full quantity" in "\n".join(format_case(case))
+    facts = facts_for_llm(case, report)
+    assert "FASTEST" not in facts and facts["RECOMMENDED_IS_FASTEST"] is False
+    assert facts["FASTEST_NOTE"] == supplier_evaluation.FASTEST_NOTE
+    assert ("no fastest option", "no fastest option") in required_mentions(facts)
+
+    def explainer(f):
+        parts = [f["OPENING"]] + [f[k]["VS_RECOMMENDED"]["SENTENCE"] for k in ("CHEAPEST",)
+                                  if k in f]
+        parts += [f.get("TRACK_RECORD_WARNING", ""), f["FASTEST_NOTE"], "All figures are simulated."]
+        return " ".join(p for p in parts if p)
+
+    agent = SupplierEvaluationAgent(adapter=adapter, rpt_client=StubRpt({}), explainer=explainer)
+    out = agent.explain({**report, "CASES": [case]})["CASES"][0]
+    assert out["EXPLANATION_ERROR"] is None
+    assert out["EXPLANATION_CHECK"]["PASSED"] is True, out["EXPLANATION_CHECK"]
+    # Without the note the check fails: the buyer must be told there is no fastest option.
+    without_note = out["EXPLANATION"].replace(supplier_evaluation.FASTEST_NOTE, "")
+    bad = grounding.check_explanation(without_note, facts, 120,
+                                      must_mention=required_mentions(facts))
+    assert "no fastest option" in bad["MISSING_MENTIONS"]
+
+
+@pytest.mark.parametrize("scenario,expected", [
+    ("S1", "Keep row = PO 4500000431 as it stands: its price, its expected arrival and its "
+           "own P(late)."),
+    ("S2", "Keep row = PO 4500000432 as it stands: its price (the revised one after a price "
+           "increase), its expected arrival and its own P(late)."),
+    ("S3", "Keep row = the 7,200 kg remainder on PO 4500000433 as it stands: its price, its "
+           "expected arrival and its own P(late)."),
+])
+def test_keep_row_sentence_depends_on_the_case(adapter, scenario, expected):
+    case = evaluate(adapter, scenario, {})["CASES"][0]
+    assert expected in format_case(case)
+
+
+def test_amounts_are_written_as_in_the_tables(adapter):
+    # "Rp178,446,429" in the facts and the explanation, as in the ranked table (no space).
+    report = evaluate(adapter, "S1", {})
+    facts = facts_for_llm(report["CASES"][0], report)
+    text = json.dumps(facts)
+    assert "Rp " not in text and "Rp17,550 per kg" in text
+    best = report["CASES"][0]["SCORING"]["CANDIDATES"][0]
+    assert facts["OPENING"] == f"Recommend supplier 100109 at an expected cost of Rp{best['EXPECTED_COST']:,}."
+    sentence = facts["CHEAPEST"]["VS_RECOMMENDED"]["SENTENCE"]
+    check = grounding.check_explanation(
+        f"{facts['OPENING']} {sentence} {facts['TRACK_RECORD_WARNING']} Keeping it costs more. "
+        "All figures are simulated.", facts, 120, must_mention=required_mentions(facts))
+    assert check["PASSED"] is True, check
+
+
+def test_exclude_flagged_label_has_one_source(adapter):
+    text = supplier_evaluation.exclude_flagged_text(True)
+    assert text == ("EXCLUDE_FLAGGED_SUPPLIERS: True (proposed rule, see "
+                    "docs/prd_change_proposals.md)")
+    assert text in format_evaluation(evaluate(adapter, "S1", {}))
+
+
 def test_s3_keep_wording_names_the_remainder(adapter):
     report = evaluate(adapter, "S3", {})
     case = report["CASES"][0]
@@ -476,7 +584,7 @@ def test_s3_keep_wording_names_the_remainder(adapter):
     kg = f"{case['SCORING']['KEEP']['MENGE']:,.0f}"
     assert kg == "7,200"
     assert facts["KEEP_CURRENT_ORDER"]["VS_RECOMMENDED"]["SENTENCE"].startswith(
-        f"Keeping the {kg} kg remainder on the current order 4500000433 would cost Rp ")
+        f"Keeping the {kg} kg remainder on the current order 4500000433 would cost Rp")
     assert facts["CANDIDATES"].endswith(f"plus keeping the {kg} kg remainder on the current order")
     assert facts["KEEP_CURRENT_ORDER"]["SUPPLIER"].startswith(f"keep the {kg} kg remainder on order")
     keep = case["SCORING"]["KEEP"]

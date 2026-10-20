@@ -26,6 +26,7 @@ from adapters import default_adapter
 from agents import action, llm
 from agents.action import ActionAgent, human_approvals
 from agents.detection import DetectionAgent
+from agents import supplier_evaluation
 from agents.supplier_evaluation import SupplierEvaluationAgent
 from integrations.sap.rpt_client import RptClient
 from scoring import disruption, supplier_score
@@ -198,16 +199,14 @@ def format_case(case: dict[str, Any]) -> list[str]:
     lines += capacity_rule_text(case)
     lines.append("Cheapest tie-break: on an equal NETPR, fewer OUT d first, then more SPARE kg, "
                  "then the lower LIFNR.")
+    lines.append(supplier_score.fastest_rule_text())
     if table.get("KEEP"):
-        kept = (f"the {table['KEEP']['MENGE']:,.0f} kg remainder on PO {case['EBELN']}"
-                if "CAPACITY_SHORTFALL" in case["REASON_CODES"] else f"PO {case['EBELN']}")
-        lines.append(f"Keep row = {kept} as it stands: its price (the revised one "
-                     "after a price increase), its expected arrival and its own P(late).")
+        lines.append(keep_row_text(case, table["KEEP"]))
     best = table["RECOMMENDED"] or "none"
     if table.get("RECOMMENDED_OPTION") == supplier_score.OPTION_KEEP:
         best = f"keep PO {case['EBELN']} ({table['RECOMMENDED']}), no new order"
     lines.append(f"Recommended: {best}, cheapest new order: {table['CHEAPEST'] or 'none'}, "
-                 f"fastest new order: {table['FASTEST'] or 'none'}")
+                 f"fastest new order: {table['FASTEST'] or no_fastest_text(table)}")
     if "EXPLANATION" in case:
         lines += ["", f"Explanation ({case['EXPLANATION_MODEL']}):",
                   case["EXPLANATION"] or f"  not available ({case['EXPLANATION_ERROR']})"]
@@ -215,6 +214,22 @@ def format_case(case: dict[str, Any]) -> list[str]:
         if case["EXPLANATION_CHECK"]:
             lines.append(f"Explanation check: {_check_text(case['EXPLANATION_CHECK'])}")
     return lines
+
+
+def no_fastest_text(table: dict[str, Any]) -> str:
+    """Why a table has no fastest mark: no new order at all, or none without a split."""
+    new = [r for r in table["CANDIDATES"] if r["OPTION"] == supplier_score.OPTION_NEW_PO]
+    return supplier_score.NO_FASTEST_NOTE if new else "none"
+
+
+def keep_row_text(case: dict[str, Any], keep: dict[str, Any]) -> str:
+    """Footer line for the keep row; the revised price is named only after a price revision."""
+    codes = case["REASON_CODES"]
+    kept = (f"the {keep['MENGE']:,.0f} kg remainder on PO {case['EBELN']}"
+            if disruption.REASON_CAPACITY_SHORTFALL in codes else f"PO {case['EBELN']}")
+    price = ("its price (the revised one after a price increase)"
+             if disruption.REASON_PRICE_INCREASE in codes else "its price")
+    return f"Keep row = {kept} as it stands: {price}, its expected arrival and its own P(late)."
 
 
 def capacity_rule_text(case: dict[str, Any]) -> list[str]:
@@ -234,8 +249,7 @@ def format_evaluation(report: dict[str, Any]) -> str:
     """Plain-text view of a supplier evaluation report."""
     lines = [f"GESIT Supplier Evaluation ({report['DATA_NOTE']})",
              f"Material {report['MATNR']}, today {report['TODAY']}",
-             f"EXCLUDE_FLAGGED_SUPPLIERS: {report['EXCLUDE_FLAGGED_SUPPLIERS']} "
-             "(proposed rule, see docs/prd_change_proposals.md)",
+             supplier_evaluation.exclude_flagged_text(report["EXCLUDE_FLAGGED_SUPPLIERS"]),
              "Flagged POs, most urgent first: " + (", ".join(report["FLAGGED_EBELN"]) or "none")
              + "; cases shown: " + (", ".join(report["SHOWN_EBELN"]) or "none")]
     settings = report.get("EXPLANATION_SETTINGS")

@@ -95,19 +95,26 @@ def test_tidy_strips_spaces_at_line_end_and_keeps_paragraphs():
 
 
 def test_repeated_wording_fails_the_check():
-    facts = {"COST": "expected cost Rp 149,600,000"}
-    check = check_explanation("Its expected cost is expected cost Rp 149,600,000. Simulated.", facts, 120)
+    facts = {"COST": "expected cost Rp149,600,000"}
+    check = check_explanation("Its expected cost is expected cost Rp149,600,000. Simulated.", facts, 120)
     assert check["REPEATED_PHRASES"] == ["expected cost is expected cost"]
     assert check["PASSED"] is False
-    good = check_explanation("Recommend supplier 100109 at an expected cost of Rp 149,600,000. "
+    good = check_explanation("Recommend supplier 100109 at an expected cost of Rp149,600,000. "
                              "The risk is the risk cost of waiting.", facts, 120)
     assert good["REPEATED_PHRASES"] == []
 
 
+def test_tidy_removes_the_space_after_rp():
+    text, fixes = tidy_text("Supplier 100109 costs Rp 178,446,429, simulated.")
+    assert text == "Supplier 100109 costs Rp178,446,429, simulated."
+    assert fixes == ["space after Rp removed x1"]
+    assert NUMBER.findall(text) == ["100109", "178,446,429"]
+
+
 def test_tidy_capitalises_sentence_starts_only():
     text, fixes = tidy_text("It is the fastest option. the recommendation rests on 4 past "
-                            "deliveries. Rp 0.27 per kg.")
+                            "deliveries. Rp0.27 per kg.")
     assert text == ("It is the fastest option. The recommendation rests on 4 past "
-                    "deliveries. Rp 0.27 per kg.")
+                    "deliveries. Rp0.27 per kg.")
     assert "capital letter at sentence start x1" in fixes
 

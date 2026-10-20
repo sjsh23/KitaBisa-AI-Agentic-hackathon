@@ -37,11 +37,16 @@ from tools import score_suppliers
 AGENT_NAME = "supplier_evaluation"
 MAX_EXPLANATION_WORDS = 120   # FR-SEL-4: under 120 words
 MIN_TRACK_RECORD = 10         # fewer past goods receipts than this is called out to the buyer
+FASTEST_NOTE = ("No new order can cover the full quantity from one supplier, so there is no "
+                "fastest option.")   # FR-SEL-3
 
 # Not in FR-SEL-1: suppliers with a flagged PO in the same run are not used as backups.
 # Proposed to the team in docs/prd_change_proposals.md. The environment variable
 # GESIT_EXCLUDE_FLAGGED_SUPPLIERS=false switches it off.
 EXCLUDE_FLAGGED_SUPPLIERS = True
+# How the report labels the switch. Item 1 is not agreed by the team yet; once it is, drop
+# "proposed rule, " here and nowhere else.
+EXCLUDE_FLAGGED_STATUS = "proposed rule, see docs/prd_change_proposals.md"
 
 MASKING_NOTE = ("on, in code: supplier names replaced by LIFNR, buyer names never sent, "
                 "checked before every call")
@@ -67,12 +72,14 @@ other sentence about keeping it.
 RECOMMENDED_IS_FASTEST is true, say it is also the fastest option.
 - If TRACK_RECORD_WARNING is present, copy it word for word, with its full stop.
 - If PREDICTION_NOTE is present, copy it word for word, with its full stop.
+- If FASTEST_NOTE is present, copy it word for word, with its full stop.
 - End with: All figures are simulated.
 
 Rules:
 - Copy numbers exactly as they appear in the phrases. Do not calculate, round, convert or \
 estimate any number.
-- Always put a space between a word and a number: "supplier 100108", "Rp 1,000,000".
+- Always put a space between a word and a number: "supplier 100108". Write amounts as in the \
+phrases, with no space after Rp: "Rp1,000,000".
 - Never write a negative amount or a minus sign; use the words given (saving, extra, lower).
 - Never write JSON field names.
 - Spell every word correctly and keep a space after every punctuation mark.
@@ -92,6 +99,11 @@ def exclude_flagged_suppliers(env: Mapping[str, str] | None = None) -> bool:
     if raw in ("1", "true", "yes", "on"):
         return True
     return EXCLUDE_FLAGGED_SUPPLIERS
+
+
+def exclude_flagged_text(on: bool) -> str:
+    """The report line for the switch: "EXCLUDE_FLAGGED_SUPPLIERS: True (proposed rule, ...)"."""
+    return f"EXCLUDE_FLAGGED_SUPPLIERS: {on} ({EXCLUDE_FLAGGED_STATUS})"
 
 
 def explanation_settings() -> dict[str, Any]:
@@ -293,8 +305,8 @@ class SupplierEvaluationAgent:
 
 
 def rp(amount: int) -> str:
-    """An IDR amount as the model should quote it, with a space after Rp."""
-    return f"Rp {amount:,}"
+    """An IDR amount as the model should quote it, written as in the tables: "Rp178,446,429"."""
+    return f"Rp{amount:,}"
 
 
 def is_remainder(case: dict[str, Any]) -> bool:
@@ -337,7 +349,7 @@ def _row_facts(row: dict[str, Any], qty: float, remainder: bool = False) -> dict
 
 
 def _phrase(part: dict[str, Any]) -> str:
-    """'purchase saving Rp 1,000,000', 'extra risk cost Rp 5,000', or 'same purchase cost'."""
+    """'purchase saving Rp1,000,000', 'extra risk cost Rp5,000', or 'same purchase cost'."""
     return part["DIRECTION"] if part["AMOUNT"] == 0 else f"{part['DIRECTION']} {rp(part['AMOUNT'])}"
 
 
@@ -416,6 +428,8 @@ def facts_for_llm(case: dict[str, Any], report: dict[str, Any]) -> dict[str, Any
         facts["FASTEST"] = _versus_facts(fastest, best, qty,
                                          f"The fastest option, supplier {fastest['LIFNR']},",
                                          remainder)
+    if fastest is None and any(not is_keep(r) for r in rows):   # FR-SEL-3: every new order splits
+        facts["FASTEST_NOTE"] = FASTEST_NOTE
     if keep is not None and best is not keep:   # why not simply keep the current order
         facts["KEEP_CURRENT_ORDER"] = _versus_facts(
             keep, best, qty, f"Keeping {keep_words(keep, remainder)}", remainder)
@@ -447,13 +461,15 @@ def required_mentions(facts: dict[str, Any]) -> list[tuple[str, str]]:
         required.append(("near tie", r"near[ -]tie"))
     if facts.get("RECOMMENDED_IS_KEEP") or "KEEP_CURRENT_ORDER" in facts:
         required.append(("keeping the current order", r"\bkeep"))
+    if "FASTEST_NOTE" in facts:
+        required.append(("no fastest option", r"no fastest option"))
     if "TRACK_RECORD_WARNING" in facts:
         n = facts["RECOMMENDED"]["PAST_DELIVERIES"].split()[0]
         required.append((f"{n} past deliveries", rf"\b{n}\b[^.]{{0,60}}(deliver|receipt)"))
     for key in ("CHEAPEST", "FASTEST"):   # FR-SEL-4: the reason, not only the cost gap
         why = facts.get(key, {}).get("VS_RECOMMENDED", {}).get("WHY")
         if why:
-            amount = re.search(r"Rp ([\d,]+)", why).group(1)
+            amount = re.search(r"Rp([\d,]+)", why).group(1)
             required.append((f"reason vs {key.lower()}: {why.split(' (')[0]}",
                              rf"(?<![\d,]){re.escape(amount)}(?![\d,])"))
             days = ("days without stock", r"days without stock")
