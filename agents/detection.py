@@ -26,6 +26,7 @@ from adapters import CsvAdapter, default_adapter
 from agents import grounding, llm
 from integrations.sap.rpt_client import RptClient
 from scoring import disruption
+from scoring.reliability import BLEND_RULE_TEXT
 from tools import get_inventory, get_open_pos, predict_delay_risk
 
 AGENT_NAME = "disruption_detection"
@@ -87,8 +88,11 @@ class DetectionAgent:
         # FR-DET-1: one feature row per open PO, scored by SAP-RPT.
         features = {r["EBELN"]: r for r in self.adapter.rpt_rows(("predict",))}
         rows = [features[po["EBELN"]] for po in open_pos if po["EBELN"] in features]
-        prediction = predict_delay_risk(rows, adapter=self.adapter, client=self.rpt_client)
-        p_late = {p["EBELN"]: p["P_LATE"] for p in prediction["predictions"]}
+        prediction = predict_delay_risk(rows, adapter=self.adapter, client=self.rpt_client,
+                                        today=today)
+        p_late = {p["EBELN"]: p["P_LATE"] for p in prediction["predictions"]}   # P_USED if blended
+        sources = {p["EBELN"]: {k: p[k] for k in ("P_RPT", "P_POST", "P_USED")}
+                   for p in prediction["predictions"] if "P_USED" in p}
         steps.append({"TOOL": "predict_delay_risk", "INPUT": {"rows": len(rows)},
                       "RESULT": f"model {prediction['model_id']}, fallback {prediction['fallback']}"})
 
@@ -98,6 +102,9 @@ class DetectionAgent:
                 [n for n in notices if n.get("ebeln") == po["EBELN"]], stockout)
             for po in open_pos
         ]
+        for po in evaluated:   # the three P(late) numbers behind the blend, for the report
+            if po["EBELN"] in sources:
+                po["P_LATE_SOURCES"] = sources[po["EBELN"]]
         # Most urgent first: largest gap after stock-out, then highest delay risk.
         flagged = sorted((po for po in evaluated if po["FLAGGED"]), key=disruption.urgency_key)
 
@@ -112,6 +119,8 @@ class DetectionAgent:
             "PREDICTION": {"MODEL_ID": prediction["model_id"], "FALLBACK": prediction["fallback"],
                            "FALLBACK_REASON": prediction["fallback_reason"],
                            "RETRIES": prediction.get("retries", [])},
+            # Kept out of PREDICTION, so the facts the model sees do not change (FR-DET-4).
+            "P_LATE_RULE": BLEND_RULE_TEXT if prediction.get("blend") else None,
             "STEPS": steps,
             "OPEN_POS": evaluated,
             "FLAGGED_POS": flagged,

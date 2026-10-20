@@ -8,7 +8,7 @@ deteriorating supplier shows up within weeks.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Any, Iterable, Mapping
 
 from scipy.stats import beta as beta_dist
 
@@ -16,6 +16,14 @@ PRIOR_ALPHA = 2.0
 PRIOR_BETA = 1.0
 FORGETTING_FACTOR = 0.97
 INTERVAL_MASS = 0.90
+
+# The delay risk GESIT uses is a fixed 50:50 blend of SAP-RPT and this posterior (team
+# decision, 20 Oct 2026, not yet in the PRD; fixed, not tuned). `blend` is the only place
+# the two are combined; BLEND_RULE_TEXT is the only place the rule is worded for a report.
+BLEND_WEIGHT_RPT = 0.5
+BLEND_RULE_TEXT = (f"P(late) = {BLEND_WEIGHT_RPT:g} x SAP-RPT + {1 - BLEND_WEIGHT_RPT:g} x "
+                   f"reliability posterior (Beta, forgetting {FORGETTING_FACTOR:g} per receipt) "
+                   "(proposed rule)")
 
 
 @dataclass(frozen=True)
@@ -66,3 +74,17 @@ def posterior(late_flags: Iterable[bool | int], forgetting: float = FORGETTING_F
     for late in late_flags:
         state = update(state, bool(late), forgetting)
     return state
+
+
+def posterior_before(receipts: Iterable[Mapping[str, Any]], today: str) -> Reliability:
+    """Posterior from the goods receipts dated before `today` (BUDAT < today), oldest first.
+    A receipt on or after the scenario date is never known when the decision is made."""
+    return posterior(r["LATE"] for r in receipts if r["BUDAT"] < today)
+
+
+def blend(p_rpt: float | None, p_post: float, weight_rpt: float = BLEND_WEIGHT_RPT) -> float:
+    """P(late) GESIT uses: the weighted mean of SAP-RPT and the posterior, or the posterior
+    alone when SAP-RPT gave no value (FR-DET-4)."""
+    if p_rpt is None:
+        return p_post
+    return weight_rpt * p_rpt + (1.0 - weight_rpt) * p_post

@@ -117,8 +117,10 @@ def format_report(report: dict[str, Any]) -> str:
                      f"{p_late:>8}  {arrivals[po['EBELN']]:<{width}}{po['GAP_DAYS']:>+4}  {flag}")
     lines += ["", "GAP = expected arrival against the stock-out date: -3 = arrives 3 days before "
                   "stock runs out, +5 = arrives 5 days after (too late).",
-              "For a split delivery ARRIVAL shows both dates and GAP is for the later part.",
-              f"Flagged, most urgent first: {', '.join(report['FLAGGED_EBELN']) or 'none'}"]
+              "For a split delivery ARRIVAL shows both dates and GAP is for the later part."]
+    if report.get("P_LATE_RULE"):   # reliability blend on (scoring.reliability.BLEND_RULE_TEXT)
+        lines.append(report["P_LATE_RULE"])
+    lines.append(f"Flagged, most urgent first: {', '.join(report['FLAGGED_EBELN']) or 'none'}")
     if "REASONING" in report:
         lines += ["", f"Assessment ({report['REASONING_MODEL']}):",
                   report["REASONING"] or f"  not available ({report['REASONING_ERROR']})"]
@@ -200,6 +202,8 @@ def format_case(case: dict[str, Any]) -> list[str]:
     lines.append("Cheapest tie-break: on an equal NETPR, fewer OUT d first, then more SPARE kg, "
                  "then the lower LIFNR.")
     lines.append(supplier_score.fastest_rule_text())
+    if table.get("P_LATE_RULE"):   # reliability blend on (scoring.reliability.BLEND_RULE_TEXT)
+        lines += [table["P_LATE_RULE"], p_late_sources_text(case)]
     if table.get("KEEP"):
         lines.append(keep_row_text(case, table["KEEP"]))
     best = table["RECOMMENDED"] or "none"
@@ -214,6 +218,30 @@ def format_case(case: dict[str, Any]) -> list[str]:
         if case["EXPLANATION_CHECK"]:
             lines.append(f"Explanation check: {_check_text(case['EXPLANATION_CHECK'])}")
     return lines
+
+
+def p_late_sources_text(case: dict[str, Any]) -> str:
+    """The three P(late) numbers for the recommended, cheapest, fastest and keep suppliers."""
+    table = case["SCORING"]
+    sources = table.get("P_LATE_SOURCES") or {}
+
+    def numbers(src: dict[str, Any] | None) -> str:
+        if not src:
+            return "n/a"
+        rpt = "n/a" if src["P_RPT"] is None else f"{src['P_RPT']:.2f}"
+        return f"SAP-RPT {rpt}, posterior {src['P_POST']:.2f}, used {src['P_USED']:.2f}"
+
+    parts, seen = [], set()
+    for lifnr in (table["RECOMMENDED"] if table.get("RECOMMENDED_OPTION") == supplier_score.OPTION_NEW_PO
+                  else None, table["CHEAPEST"], table["FASTEST"]):
+        if lifnr and lifnr not in seen:
+            seen.add(lifnr)
+            parts.append(f"{lifnr} {numbers(sources.get(lifnr))}")
+    if table.get("KEEP"):
+        keep = table["KEEP"]
+        parts.append(f"keep PO {keep['KEEP_EBELN']} ({keep['LIFNR']}) "
+                     f"{numbers((case.get('CURRENT_PO') or {}).get('P_LATE_SOURCES'))}")
+    return "P(late) sources: " + "; ".join(parts)
 
 
 def no_fastest_text(table: dict[str, Any]) -> str:

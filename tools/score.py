@@ -11,7 +11,7 @@ from typing import Any, Iterable, Mapping
 from adapters import CsvAdapter, default_adapter
 from integrations.sap.rpt_client import RptClient
 from scoring import rpt_features, supplier_score
-from scoring.reliability import posterior
+from scoring.reliability import BLEND_RULE_TEXT, posterior
 from tools.predict import predict_delay_risk
 from tools.read_tools import get_inventory, get_market_price, get_quotes
 
@@ -66,8 +66,10 @@ def score_suppliers(matnr: str, qty: float, need_by: str, exclude_lifnr: Iterabl
             rpt_features.recent_ordered_kg(po_lines, lifnr, today))
         for lifnr, quote in candidates.items()
     ]
-    prediction = predict_delay_risk(rows, adapter=adapter, client=client)
-    p_late = {p["LIFNR"]: p["P_LATE"] for p in prediction["predictions"]}
+    prediction = predict_delay_risk(rows, adapter=adapter, client=client, today=today)
+    p_late = {p["LIFNR"]: p["P_LATE"] for p in prediction["predictions"]}   # P_USED if blended
+    sources = {p["LIFNR"]: {k: p[k] for k in ("P_RPT", "P_POST", "P_USED")}
+               for p in prediction["predictions"] if "P_USED" in p}
     keep = None
     if current_po is not None:
         lifnr = str(current_po["LIFNR"])
@@ -94,6 +96,9 @@ def score_suppliers(matnr: str, qty: float, need_by: str, exclude_lifnr: Iterabl
         "PREDICTION": {"MODEL_ID": prediction["model_id"], "FALLBACK": prediction["fallback"],
                        "FALLBACK_REASON": prediction["fallback_reason"], "ROWS": len(rows),
                        "RETRIES": prediction.get("retries", [])},
+        # The reliability blend, outside PREDICTION so the model's facts do not change.
+        "P_LATE_RULE": BLEND_RULE_TEXT if prediction.get("blend") else None,
+        "P_LATE_SOURCES": sources,   # per candidate LIFNR: P_RPT, P_POST, P_USED (blend only)
         "CANDIDATES": ranked,
         "EXCLUDED": sorted(excluded, key=lambda e: e["LIFNR"]),
         "RECOMMENDED": ranked[0]["LIFNR"] if ranked else None,

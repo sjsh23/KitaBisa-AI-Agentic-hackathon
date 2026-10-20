@@ -79,16 +79,20 @@ def labels(case):
 
 def test_strategies_match_the_real_recommendation(built):
     cases, meta, _ = built
-    assert meta["DETECTION_MODEL"] == "sap-rpt-1.6" and meta["EXCLUDE_FLAGGED_SUPPLIERS"] is True
-    assert labels(cases["S1"]) == {mc.GESIT: "100109 10,000 kg",
+    assert meta["DETECTION_MODEL"] == "RPT_ONLY sap-rpt-1.6, LEARNING sap-rpt-1.6 + posterior"
+    assert meta["EXCLUDE_FLAGGED_SUPPLIERS"] is True
+    assert labels(cases["S1"]) == {mc.GESIT_RPT_ONLY: "100109 10,000 kg",
+                                   mc.GESIT_LEARNING: "100109 10,000 kg",
                                    mc.ALWAYS_CHEAPEST: "100105 10,000 kg",
                                    mc.ALWAYS_FASTEST: "100109 10,000 kg",
                                    mc.KEEP_CURRENT_PO: "keep PO 4500000431"}
-    assert labels(cases["S2"]) == {mc.GESIT: "keep PO 4500000432",
+    assert labels(cases["S2"]) == {mc.GESIT_RPT_ONLY: "keep PO 4500000432",
+                                   mc.GESIT_LEARNING: "keep PO 4500000432",
                                    mc.ALWAYS_CHEAPEST: "100105 8,000 kg",
                                    mc.ALWAYS_FASTEST: "100102 8,000 kg",
                                    mc.KEEP_CURRENT_PO: "keep PO 4500000432"}
-    assert labels(cases["S3"]) == {mc.GESIT: "100108 7,200 kg",
+    assert labels(cases["S3"]) == {mc.GESIT_RPT_ONLY: "100108 7,200 kg",
+                                   mc.GESIT_LEARNING: "100109 2,500 kg + 100102 4,700 kg",
                                    mc.ALWAYS_CHEAPEST: "100105 7,200 kg",
                                    mc.ALWAYS_FASTEST: "100102 7,200 kg",
                                    mc.KEEP_CURRENT_PO: "keep PO 4500000433"}
@@ -102,9 +106,10 @@ def test_strategies_match_the_real_recommendation(built):
 
 def test_predictor_is_called_once_per_case_and_never_in_the_loop(built):
     cases, _, rpt = built
-    assert rpt.calls == 1 + len(cases)   # Detection once, then one ranked table per case
+    # Per mode (RPT_ONLY, LEARNING): Detection once, then one ranked table per case.
+    assert rpt.calls == len(mc.MODES) * (1 + len(cases))
     mc.simulate(list(cases.values()), mc.load_world(), runs=50, seed=42)
-    assert rpt.calls == 1 + len(cases)
+    assert rpt.calls == len(mc.MODES) * (1 + len(cases))
 
 
 def test_same_seed_same_results_other_seed_differs(adapter):
@@ -131,7 +136,7 @@ def test_on_time_world_costs_only_the_purchase():
 def test_on_time_world_on_the_real_cases(built):
     cases, _, _ = built
     out = mc.simulate(list(cases.values()), OnTimeWorld(), runs=5, seed=1)
-    assert (out["S1"][mc.GESIT]["COST"] == cases["S1"].choices[mc.GESIT].purchase_cost).all()
+    assert (out["S1"][mc.GESIT_RPT_ONLY]["COST"] == cases["S1"].choices[mc.GESIT_RPT_ONLY].purchase_cost).all()
     # Keeping PO 4500000431 is 5 days late even when nothing slips further (2026-10-11).
     assert (out["S1"][mc.KEEP_CURRENT_PO]["OUT_DAYS"] == 5).all()
 
@@ -140,9 +145,9 @@ def test_common_random_numbers(built):
     cases, _, _ = built
     out = mc.simulate(list(cases.values()), mc.load_world(), runs=300, seed=42)
     s1 = out["S1"]   # GESIT and ALWAYS_FASTEST both order 100109 in S1
-    assert np.array_equal(s1[mc.GESIT]["COST"], s1[mc.ALWAYS_FASTEST]["COST"])
-    assert np.array_equal(out["S2"][mc.GESIT]["COST"], out["S2"][mc.KEEP_CURRENT_PO]["COST"])
-    assert s1[mc.GESIT]["OUT_DAYS"].any()   # 100109 is late in some runs, the same for both
+    assert np.array_equal(s1[mc.GESIT_RPT_ONLY]["COST"], s1[mc.ALWAYS_FASTEST]["COST"])
+    assert np.array_equal(out["S2"][mc.GESIT_RPT_ONLY]["COST"], out["S2"][mc.KEEP_CURRENT_PO]["COST"])
+    assert s1[mc.GESIT_RPT_ONLY]["OUT_DAYS"].any()   # 100109 is late in some runs, the same for both
 
 
 def test_split_stockout_is_quantity_weighted():
@@ -172,6 +177,44 @@ def test_report_text(adapter):
     assert "quantity-weighted average" in text and "Rp150,000,000 per day" in text
     assert "No SAP-RPT or LLM call inside the loop" in text
     assert chr(0x2014) not in text and chr(0x2013) not in text   # em and en dash
+
+
+def test_rpt_only_numbers_do_not_depend_on_the_learning_strategy(built):
+    # GESIT_RPT_ONLY is the GESIT of before the blend: adding GESIT_LEARNING to the run must
+    # not change its draws (common random numbers keyed per supplier and date).
+    cases, _, _ = built
+    old = [mc.Case(c.scenario, c.ebeln, c.qty, c.stockout, c.downtime_cost_per_day,
+                   {n: ch for n, ch in c.choices.items() if n != mc.GESIT_LEARNING},
+                   c.prediction_model) for c in cases.values()]
+    world = mc.load_world()
+    with_learning = mc.simulate(list(cases.values()), world, runs=300, seed=42)
+    without = mc.simulate(old, world, runs=300, seed=42)
+    for scenario in without:
+        for name in without[scenario]:
+            assert np.array_equal(with_learning[scenario][name]["COST"], without[scenario][name]["COST"])
+
+
+def test_calibration_table_and_drift_history(adapter):
+    report = mc.run("all", 20, 42, adapter, RecordedRpt())
+    rows = {(r["SCENARIO"], r["LIFNR"]): r for r in report["CALIBRATION"]}
+    s3 = rows[("S3", "100108")]
+    assert (s3["P_RPT"], s3["P_TRUE"]) == (0.21, pytest.approx(0.45, abs=0.005))
+    assert s3["P_USED"] == round(0.5 * s3["P_RPT"] + 0.5 * s3["P_POST"], 4)
+    assert rows[("S1", "100101")]["KEEP"] is True
+    # Visible goods receipts of 100108, not the world's truth (D-1).
+    assert report["DRIFT_HISTORY"] == {"LIFNR": "100108", "SPLIT_DATE": "2026-03-01",
+                                       "BEFORE": {"LATE": 4, "N": 36}, "AFTER": {"LATE": 5, "N": 15}}
+    text = mc.format_report(report)
+    assert "before 2026-03-01 4 late of 36 (11%), from 2026-03-01 5 late of 15 (33%)" in text
+    assert "built from the RPT_ONLY ranked table" in text
+    assert "GESIT_LEARNING vs" in text and "  GESIT_RPT_ONLY" in text
+
+
+def test_modes_leave_the_switch_as_it_was(adapter):
+    import os
+    before = os.environ.get("GESIT_RELIABILITY_BLEND")
+    mc.build_cases(adapter, RecordedRpt())
+    assert os.environ.get("GESIT_RELIABILITY_BLEND") == before
 
 
 def test_only_eval_uses_the_world_and_the_truth():

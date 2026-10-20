@@ -135,6 +135,7 @@ def current_po_terms(po: dict[str, Any]) -> dict[str, Any]:
     return {"EBELN": po["EBELN"], "LIFNR": po["LIFNR"], "MENGE": float(po["MENGE"]),
             "PO_NETPR": int(po["NETPR"]), "NETPR": netpr, "ARRIVAL": po["EXPECTED_ARRIVAL"],
             "PARTIAL_ARRIVAL": po.get("PARTIAL_ARRIVAL"), "P_LATE": po["P_LATE"],
+            "P_LATE_SOURCES": po.get("P_LATE_SOURCES"),   # SAP-RPT, posterior, used (blend only)
             "ARRIVAL_VS_STOCKOUT": po["ARRIVAL_VS_STOCKOUT"], "REASONS": po["REASONS"]}
 
 
