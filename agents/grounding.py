@@ -26,6 +26,13 @@ ISO_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 NUMBER = re.compile(r"(?<![\d.,])\d+(?:,\d{3})*(?:\.\d+)?")
 NEGATIVE_AMOUNT = re.compile(r"(?:-|\u2212)\s*Rp\s*\d|Rp\s*(?:-|\u2212)\s*\d", re.IGNORECASE)
 DASHES = ("\u2014", "\u2013")   # em dash, en dash
+# A lowercase letter that starts the text or a sentence ("... 100109. the recommendation").
+SENTENCE_START_LOWER = re.compile(r"(^|[.!?] )([a-z])")
+# The same two to four words on both sides of a linking word: "expected cost is expected cost".
+# The phrase may not start with an article, so "the risk is the risk cost" is not caught.
+REPEATED_PHRASE = re.compile(
+    r"\b((?!(?:the|a|an)\b)[a-z]+(?: [a-z]+){1,3}) (?:is|was|are|of|at) (?:an |a |the )?\1\b",
+    re.IGNORECASE)
 BUYER_ID = re.compile(r"\bBUYER\d+\b")
 
 
@@ -147,10 +154,12 @@ def correct_word(word: str, known: set[str]) -> str:
 
 
 def tidy_text(text: str, *sources: Any) -> tuple[str, list[str]]:
-    """Fix spacing and spelling in a model text; returns the text and the fixes made.
+    """Fix spacing, sentence capitals and spelling in a model text; returns the text and
+    the fixes made.
 
     `sources` (system prompt, facts) give the known words for the spelling fix.
-    Only spaces are added or removed and words respelled; numbers never change.
+    Only spaces are added or removed, sentence starts capitalised and words respelled;
+    numbers never change.
     """
     fixes: list[str] = []
     rules = (
@@ -166,6 +175,9 @@ def tidy_text(text: str, *sources: Any) -> tuple[str, list[str]]:
         text, count = pattern.subn(repl, text)
         if count:
             fixes.append(f"{label} x{count}")
+    text, count = SENTENCE_START_LOWER.subn(lambda m: m.group(1) + m.group(2).upper(), text)
+    if count:
+        fixes.append(f"capital letter at sentence start x{count}")
     known = vocabulary(*sources)
 
     def respell(match: re.Match[str]) -> str:
@@ -192,6 +204,7 @@ def check_explanation(text: str, facts: Any, max_words: int, lifnrs: Iterable[st
                if not re.search(pattern, text, re.IGNORECASE)]
     words = len(text.split())
     has_dashes = any(d in text for d in DASHES)
+    repeated = repeated_phrases(text)
     return {
         "WORDS": words,
         "WITHIN_WORD_LIMIT": words < max_words,
@@ -200,6 +213,13 @@ def check_explanation(text: str, facts: Any, max_words: int, lifnrs: Iterable[st
         "MISSING_SPACES": glued,
         "MISSING_MENTIONS": missing,
         "HAS_DASHES": has_dashes,
+        "REPEATED_PHRASES": repeated,
         "PASSED": (words < max_words and not ungrounded and not negative and not glued
-                   and not missing and not has_dashes),
+                   and not missing and not has_dashes and not repeated),
     }
+
+
+def repeated_phrases(text: str) -> list[str]:
+    """Phrases of two or more words said twice around a linking word, such as
+    "expected cost is expected cost"."""
+    return [m.group(0) for m in REPEATED_PHRASE.finditer(text)]

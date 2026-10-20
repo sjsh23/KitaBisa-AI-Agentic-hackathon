@@ -56,17 +56,17 @@ receive the facts for one replacement order as JSON. Every value is a ready-made
 data is simulated.
 
 Write an explanation for the buyer in plain English, at most 100 words:
-- Recommend the RECOMMENDED option and give its expected cost. If RECOMMENDED_IS_KEEP is \
-true, recommend keeping the current order and placing no new order.
-- If KEEP_CURRENT_ORDER is present, say in one sentence why the recommendation beats keeping \
-the current order: its EXPECTED_COST phrase followed by its WHY phrase.
-- Explain why it beats CHEAPEST and FASTEST using their VS_RECOMMENDED phrases: give the \
-EXPECTED_COST phrase followed by the WHY phrase, copied with its figures, so the buyer sees \
-the reason and not only the cost difference. If RECOMMENDED_IS_CHEAPEST or \
-RECOMMENDED_IS_FASTEST is true, say so instead.
-- If a VS_RECOMMENDED block has NEAR_TIE true, say that the two are a near tie.
-- If TRACK_RECORD_WARNING is present, repeat it.
-- If PREDICTION_NOTE is present, repeat it.
+- Start with OPENING, copied word for word. It already names the recommendation and its \
+expected cost; do not repeat the expected cost after it.
+- Then copy, word for word and in this order, the VS_RECOMMENDED SENTENCE of \
+KEEP_CURRENT_ORDER, CHEAPEST and FASTEST, for each one that is present. Each sentence already \
+gives the cost difference and the reason; do not reword it or add words around its figures.
+- If RECOMMENDED_IS_KEEP is true, OPENING already says to keep the current order: write no \
+other sentence about keeping it.
+- If RECOMMENDED_IS_CHEAPEST is true, say it is also the cheapest option; if \
+RECOMMENDED_IS_FASTEST is true, say it is also the fastest option.
+- If TRACK_RECORD_WARNING is present, copy it word for word, with its full stop.
+- If PREDICTION_NOTE is present, copy it word for word, with its full stop.
 - End with: All figures are simulated.
 
 Rules:
@@ -292,9 +292,12 @@ def _why_phrase(diff: dict[str, Any], row: dict[str, Any], best: dict[str, Any])
     return None
 
 
-def _versus_facts(row: dict[str, Any], best: dict[str, Any], qty: float) -> dict[str, Any]:
-    """A comparison row: its phrases plus how it compares with #1 (never a negative amount)."""
+def _versus_facts(row: dict[str, Any], best: dict[str, Any], qty: float,
+                  subject: str) -> dict[str, Any]:
+    """A comparison row: its phrases plus how it compares with #1 (never a negative amount).
+    `subject` opens the ready-made SENTENCE, for example "The cheapest option, supplier 100105"."""
     diff = supplier_score.compare_to_best(row, best)
+    gap = f"{rp(diff['EXPECTED_COST_GAP'])} more ({diff['EXPECTED_COST_GAP_PCT']}% more)"
     versus = {
         "EXPECTED_COST": (f"{rp(diff['EXPECTED_COST_GAP'])} more expected cost "
                           f"({diff['EXPECTED_COST_GAP_PCT']}% more)"),
@@ -305,6 +308,10 @@ def _versus_facts(row: dict[str, Any], best: dict[str, Any], qty: float) -> dict
     why = _why_phrase(diff, row, best)
     if why:
         versus["WHY"] = why
+    # The whole sentence is built in code: given only phrases, the model wrapped its own words
+    # around them ("with expected cost Rp 972,433,035 more expected cost").
+    versus["SENTENCE"] = (f"{subject} {'is a near tie: it ' if diff['NEAR_TIE'] else ''}"
+                          f"would cost {gap}" + (f", {why}" if why else "") + ".")
     return {**_row_facts(row, qty), "VS_RECOMMENDED": versus}
 
 
@@ -325,24 +332,39 @@ def facts_for_llm(case: dict[str, Any], report: dict[str, Any]) -> dict[str, Any
         "DOWNTIME_COST": f"{rp(table['DOWNTIME_COST_PER_DAY'])} per day without stock",
         "CANDIDATES": (f"{sum(not is_keep(r) for r in rows)} suppliers ranked"
                        + (", plus keeping the current order" if keep else "")),
+        "OPENING": opening_sentence(best),
         "RECOMMENDED": _row_facts(best, qty),
         "RECOMMENDED_IS_KEEP": best is keep,
         "RECOMMENDED_IS_CHEAPEST": best is cheapest,
         "RECOMMENDED_IS_FASTEST": best is fastest,
     }
     if cheapest is not None and best is not cheapest:
-        facts["CHEAPEST"] = _versus_facts(cheapest, best, qty)
-    if fastest is not None and best is not fastest:
-        facts["FASTEST"] = _versus_facts(fastest, best, qty)
+        both = "cheapest and fastest" if cheapest is fastest else "cheapest"
+        facts["CHEAPEST"] = _versus_facts(cheapest, best, qty,
+                                          f"The {both} option, supplier {cheapest['LIFNR']},")
+    if fastest is not None and best is not fastest and fastest is not cheapest:
+        facts["FASTEST"] = _versus_facts(fastest, best, qty,
+                                         f"The fastest option, supplier {fastest['LIFNR']},")
     if keep is not None and best is not keep:   # why not simply keep the current order
-        facts["KEEP_CURRENT_ORDER"] = _versus_facts(keep, best, qty)
+        facts["KEEP_CURRENT_ORDER"] = _versus_facts(
+            keep, best, qty, f"Keeping the current order {keep['KEEP_EBELN']}")
     if best["N_RECEIPTS"] < MIN_TRACK_RECORD:
-        facts["TRACK_RECORD_WARNING"] = (f"the recommendation rests on only {best['N_RECEIPTS']} "
-                                         f"past deliveries from supplier {best['LIFNR']}")
+        facts["TRACK_RECORD_WARNING"] = (f"The recommendation rests on only {best['N_RECEIPTS']} "
+                                         f"past deliveries from supplier {best['LIFNR']}.")
     if table["PREDICTION"]["FALLBACK"]:
         facts["PREDICTION_NOTE"] = ("SAP-RPT was unavailable, so the late risk comes from "
-                                    "supplier reliability history")
+                                    "supplier reliability history.")
     return facts
+
+
+def opening_sentence(best: dict[str, Any]) -> str:
+    """The explanation's first sentence, built in code so the model does not word the
+    recommendation itself (it wrote "Its expected cost is expected cost Rp ...")."""
+    cost = rp(best["EXPECTED_COST"])
+    if is_keep(best):
+        return (f"Recommend keeping order {best['KEEP_EBELN']} with supplier {best['LIFNR']} "
+                f"and placing no new order, at an expected cost of {cost}.")
+    return f"Recommend supplier {best['LIFNR']} at an expected cost of {cost}."
 
 
 def required_mentions(facts: dict[str, Any]) -> list[tuple[str, str]]:

@@ -67,7 +67,7 @@ git diff --cached --name-only
 py -3.11 -m pytest -q
 ```
 
-Expected: `164 passed`. The tests never call the network: SAP-RPT, SAP AI Core and the reasoning models are replaced by fakes.
+Expected: `167 passed`. The tests never call the network: SAP-RPT, SAP AI Core and the reasoning models are replaced by fakes.
 
 | Test file | What it proves | Requirements |
 |---|---|---|
@@ -291,14 +291,23 @@ Then the Supplier Evaluation explanation, one per replacement case. Pass when ea
 - says the figures are simulated (D-3),
 - is followed by `Explanation check: ... passed`. The check fails on 120 words or more
   (FR-SEL-4), em or en dashes, any number not in the facts the model received, a negative
-  Rp amount, a LIFNR glued to a word ("from100108"), or a missing required mention
-  (simulated, near tie, past deliveries, the reason amount vs the cheapest and fastest,
-  days without stock). A `FAILED` check does not stop the run; record
+  Rp amount, a LIFNR glued to a word ("from100108"), repeated wording such as "expected
+  cost is expected cost", or a missing required mention (simulated, near tie, past
+  deliveries, the reason amount vs the cheapest and fastest, days without stock). A `FAILED` check does not stop the run; record
   the text and the listed problems and send them to the team.
+
+Since 20 October 2026 most of the explanation is written in code and only copied by the
+model: the first sentence ("Recommend supplier 100109 at an expected cost of Rp ...") and
+one sentence per comparison ("The cheapest option, supplier 100105, would cost Rp ... more
+(...% more), mainly from ..."). Given only phrases, the model had wrapped its own words
+around them ("Its expected cost is expected cost Rp ..."). When keeping the current PO
+ranks #1, the text starts with "Recommend keeping order ... and placing no new order" and
+does not compare keeping with itself.
 
 Before the check, both the assessment and the explanation are tidied in code: a space
 between a word and a number ("againts0.23" becomes "against 0.23"), a space after
-punctuation, no double spaces or spaces at a line end, and known misspellings corrected.
+punctuation, no double spaces or spaces at a line end, a capital letter at the start of
+each sentence, and known misspellings corrected.
 Numbers are never changed. When something was fixed, a line `Text tidied in code: ...`
 under the text lists the fixes (JSON: `REASONING_FIXES`, `EXPLANATION_FIXES`).
 

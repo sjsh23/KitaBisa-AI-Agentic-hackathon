@@ -152,6 +152,10 @@ def test_llm_facts_are_masked_and_precomputed(adapter):
     # Ready-made phrases: a space around every number, no negative amount (FR-SEL-4).
     assert facts["RECOMMENDED"]["SUPPLIER"] == "supplier 100109"
     assert facts["RECOMMENDED"]["EXPECTED_COST"].startswith("expected cost Rp ")
+    # The first sentence is built in code (the model wrote "expected cost is expected cost").
+    assert facts["OPENING"] == ("Recommend supplier 100109 at an expected cost of "
+                                + facts["RECOMMENDED"]["EXPECTED_COST"].removeprefix("expected cost ")
+                                + ".")
     assert not grounding.NEGATIVE_AMOUNT.search(text)
     cheapest = facts["CHEAPEST"]["VS_RECOMMENDED"]
     assert cheapest["PURCHASE"] == "purchase saving Rp 1,000,000"   # 17,450 vs 17,550 x 10,000 kg
@@ -364,6 +368,8 @@ def test_keep_wins_in_all_when_the_best_backup_is_taken(adapter):
     facts = facts_for_llm(s2, report)
     assert facts["RECOMMENDED_IS_KEEP"] is True and "KEEP_CURRENT_ORDER" not in facts
     assert facts["RECOMMENDED"]["SUPPLIER"].startswith("keep order 4500000432")
+    assert facts["OPENING"] == ("Recommend keeping order 4500000432 with supplier 100103 and "
+                                "placing no new order, at an expected cost of Rp 149,600,000.")
     assert "for the current order 4500000432" in facts["CHEAPEST"]["VS_RECOMMENDED"]["WHY"]
     assert "keeping the current order" in [label for label, _ in required_mentions(facts)]
     assert "Recommended: keep PO 4500000432 (100103), no new order" in format_evaluation(report)
@@ -376,3 +382,19 @@ def test_keep_comparison_is_given_when_a_new_order_wins(adapter):
     assert facts["RECOMMENDED_IS_KEEP"] is False
     assert versus["WHY"].startswith("mainly from extra risk cost Rp ")   # 5 days after stock-out
     assert facts["CANDIDATES"] == "7 suppliers ranked, plus keeping the current order"
+
+
+def test_comparison_sentences_are_built_in_code(adapter):
+    # The model wrapped its own words around the cost phrases ("with expected cost Rp ...
+    # more expected cost"), so every comparison sentence is now ready-made.
+    report = evaluate(adapter, "all", {})
+    cases = {c["EBELN"]: facts_for_llm(c, report) for c in report["CASES"]}
+    keep = cases["4500000431"]["KEEP_CURRENT_ORDER"]["VS_RECOMMENDED"]["SENTENCE"]
+    assert keep.startswith("Keeping the current order 4500000431 would cost Rp ")
+    assert "expected cost" not in keep.split(", mainly")[0] and keep.endswith(").")
+    tie = cases["4500000433"]["FASTEST"]["VS_RECOMMENDED"]["SENTENCE"]
+    assert tie.startswith("The fastest option, supplier 100109, is a near tie: it would cost Rp 125,000 more")
+    for facts in cases.values():
+        for key in ("KEEP_CURRENT_ORDER", "CHEAPEST", "FASTEST"):
+            if key in facts:
+                assert not grounding.repeated_phrases(facts[key]["VS_RECOMMENDED"]["SENTENCE"])

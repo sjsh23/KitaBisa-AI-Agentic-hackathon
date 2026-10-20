@@ -92,3 +92,22 @@ def test_tidy_strips_spaces_at_line_end_and_keeps_paragraphs():
     text, fixes = tidy_text("It is the fastest option. \n\nAll figures are simulated.")
     assert text == "It is the fastest option.\n\nAll figures are simulated."
     assert fixes == ["space at line end removed x1"]
+
+
+def test_repeated_wording_fails_the_check():
+    facts = {"COST": "expected cost Rp 149,600,000"}
+    check = check_explanation("Its expected cost is expected cost Rp 149,600,000. Simulated.", facts, 120)
+    assert check["REPEATED_PHRASES"] == ["expected cost is expected cost"]
+    assert check["PASSED"] is False
+    good = check_explanation("Recommend supplier 100109 at an expected cost of Rp 149,600,000. "
+                             "The risk is the risk cost of waiting.", facts, 120)
+    assert good["REPEATED_PHRASES"] == []
+
+
+def test_tidy_capitalises_sentence_starts_only():
+    text, fixes = tidy_text("It is the fastest option. the recommendation rests on 4 past "
+                            "deliveries. Rp 0.27 per kg.")
+    assert text == ("It is the fastest option. The recommendation rests on 4 past "
+                    "deliveries. Rp 0.27 per kg.")
+    assert "capital letter at sentence start x1" in fixes
+

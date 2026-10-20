@@ -136,6 +136,8 @@ def _check_text(check: dict[str, Any]) -> str:
         text += f", does not mention: {', '.join(check['MISSING_MENTIONS'])}"
     if check["HAS_DASHES"]:
         text += ", contains em or en dashes"
+    if check.get("REPEATED_PHRASES"):
+        text += f", repeated wording: {'; '.join(check['REPEATED_PHRASES'])}"
     return text + (", passed" if check["PASSED"] else ", FAILED")
 
 
