@@ -179,6 +179,67 @@ The buyer makes that change in S/4; GESIT only drafts the new PO."
 it, reduce it to the quantity that still arrives on time, or keep it. The buyer makes the change
 in S/4; GESIT does not change the old PO."
 
+## 6. Proposed PRD change: tool inputs and outputs the code needs (section 8)
+
+**Status:** found on 20 Oct 2026 when the PRD was checked against the code; waiting for the team.
+
+**What section 8 says today:** the input and output of each of the 14 tools. Five of the ten
+tools built so far take more than that, or return more.
+
+| Tool | Section 8 today | Added in the code | Why |
+|---|---|---|---|
+| `score_suppliers` | input matnr, qty, need_by | `exclude_lifnr`, `reserved_kg`, `current_po`, `today` (all optional) | suppliers with a flagged PO are not backups (item 1); spare capacity already promised to an earlier case in the same run (item 2); "keep the current PO" as a ranked option (item 4); the as-of date, by default the inventory date |
+| `predict_delay_risk` | output P(late) per row, model id, fallback flag | `fallback_reason`, `retries` | FR-DET-4 asks the output to say why the fallback was used; network retries since 20 Oct (NFR-6) |
+| `draft_po` | input lifnr, matnr, qty, netpr, eindt, reason | `ernam`, `replaces`, `bedat` (optional) | ERNAM is the buyer the PO is for (the buyer of the PO it replaces); REPLACES_EBELN links the draft to the old PO (item 5); BEDAT defaults to today |
+| `submit_for_approval`, `release_po` | input ebeln | the caller (user and role) | POL-1 needs the role (buyer or manager) and POL-4 needs to know whether an agent is calling |
+| `get_supplier_history` | input lifnr, days=180 | `today` (optional) | the as-of date the 180 days count back from |
+
+The caller in the last two rows is a function argument only while the policies run as local
+Python. On AgentCore the Gateway passes the caller's identity to Cedar, so it would not be a
+tool input there; the PRD row can say "caller identity (from the Gateway)".
+
+Not proposed: the `adapter`, `store` and `client` arguments in `tools/`. They are the data
+access of the local build (CSV files, in-memory POs, the SAP-RPT client) and disappear when
+the tools become Lambda handlers behind the Gateway.
+
+**Proposed section 8 rows:**
+
+| Tool | Input | Output |
+|---|---|---|
+| get_supplier_history | lifnr, days=180, today? | receipts with delay, reliability posterior |
+| predict_delay_risk | rows[] (rpt_po_lines schema) | P(late) per row, model id, fallback flag and reason, network retries |
+| score_suppliers | matnr, qty, need_by, today?, exclude_lifnr?, reserved_kg?, current_po? | ranked table (FR-SEL-2), with the keep-the-current-PO row when current_po is given |
+| draft_po | lifnr, matnr, qty, netpr, eindt, reason, ernam, replaces?, bedat? | ebeln (DRAFT) |
+| submit_for_approval | ebeln; caller identity (from the Gateway) | approval request id |
+| release_po | ebeln; caller identity (from the Gateway) | released or denied (policy) |
+
+## 7. Proposed rename: two different agents are called "Evaluation" (sections 4, 5, 7.1, 16)
+
+**Status:** found on 20 Oct 2026 when the PRD was checked against the code; waiting for the team.
+
+**The clash:** the PRD has a Supplier Evaluation agent (FR-SEL, ranks backup suppliers) and an
+Evaluation agent (FR-EVA, Evaluation and Learning: reliability update, baselines). In the code,
+`agents/evaluation.py` with class `EvaluationAgent` is the Supplier Evaluation agent, and the run
+JSON calls its report `EVALUATION`. When the FR-EVA agent is built there is no clear name left
+for it. The PRD itself is ambiguous in FR-SUP-2: "Run Detection, then Evaluation, then Action,
+then Integrity/Evaluation as needed" uses the word for both agents in one sentence.
+
+**Option A (recommended): rename the code, the PRD stays.** `agents/evaluation.py` becomes
+`agents/supplier_evaluation.py`, `EvaluationAgent` becomes `SupplierEvaluationAgent`, the JSON
+key `EVALUATION` becomes `SUPPLIER_EVALUATION`, and `tests/test_evaluation_agent.py`,
+`docs/testing.md` and `WORKING.md` follow. The FR-EVA agent then gets `agents/evaluation.py`,
+matching the PRD's "Evaluation agent". No requirement changes; about an hour of mechanical work
+with the tests as a check. Anyone reading `--json` output must use the new key.
+
+**Option B: rename the FR-EVA agent in the PRD to "Learning agent".** Section 5 diagram,
+section 4 table (Review row), section 7.6 heading and section 16 Q&A ("What does the Learning
+agent actually learn?"). No code change, but "Evaluation" stays the name of the backup ranking,
+which judges may confuse with "evaluation vs baselines".
+
+**Proposed FR-SUP-2 wording (either option):** "Run Detection, then Supplier Evaluation, then
+Action, then Integrity Guard and Evaluation and Learning as needed; stop and hand back to the
+human when policy denies an action."
+
 ## PRD Changelog draft
 
 Lines to add to the Changelog at the end of `PRD.md` once the team agrees:
@@ -187,3 +248,5 @@ Lines to add to the Changelog at the end of `PRD.md` once the team agrees:
 - 2026-10-20: FR-SEL-1, FR-SEL-3, FR-ACT-1: keeping the flagged PO as it is is ranked as one more option with the same expected-cost formula; cheapest and fastest are marked among new orders only; nothing is drafted when keeping ranks #1. `score_suppliers` gets the optional input `current_po` (section 8).
 - 2026-10-20: FR-ACT-1: every case says what happens to the old PO (cancel, reduce to the on-time part, or keep); the buyer makes the change in S/4, GESIT does not.
 - 2026-10-15: FR-SEL-2: split orders made explicit ("cannot cover full quantity", kilograms add up to Q, never ranked above spare capacity); in a run with several flagged POs, the recommended order reserves spare capacity for later cases. The S1 versus `all` difference for 100109 (12,500 kg spare) was this reservation, now shown in the output.
+- 2026-10-20: Section 8: tool inputs and outputs brought in line with the code: `get_supplier_history` today?; `predict_delay_risk` returns the fallback reason and network retries; `score_suppliers` takes today?, exclude_lifnr?, reserved_kg?, current_po?; `draft_po` takes ernam, replaces?, bedat?; `submit_for_approval` and `release_po` use the caller identity from the Gateway (POL-1, POL-4).
+- 2026-10-20: FR-SUP-2 names Supplier Evaluation and Evaluation and Learning apart; the code's Supplier Evaluation agent is renamed `agents/supplier_evaluation.py` (option A) or the FR-EVA agent becomes the Learning agent (option B).

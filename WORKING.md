@@ -21,7 +21,7 @@ Milestone "5-11 Oct, core loop in terminal" (PRD section 14). The Disruption Det
 
 ## Next up (in order)
 
-1. Team to decide on `docs/prd_change_proposals.md` (exclusion rule, split wording, item 4 "keep the current PO" ranked as an option, item 5 old PO line; item 5 has a sentence for the deck) and the other choices under "To confirm with the team" below; then copy the agreed text into `PRD.md` and its Changelog.
+1. Team to decide on `docs/prd_change_proposals.md` (exclusion rule, split wording, item 4 "keep the current PO" ranked as an option, item 5 old PO line with a sentence for the deck, item 6 tool inputs in section 8, item 7 the two "Evaluation" agents) and the other choices under "To confirm with the team" below; then copy the agreed text into `PRD.md` and its Changelog.
 2. Run time on Gen AI Hub: S1 took 53 s with GPT-5.4 (NFR-1 allows 60, target 20; it was 29 to 33 s with Gemini). Time the ten-run check and tell the team if S1 stays near 60 s. Gen AI Hub rate limits are not known yet; the ten-run check will show them.
 3. Finish `docs/testing.md` steps 5 to 7 against the real services: ten consecutive S1 runs (NFR-6), now covering all three agents.
 4. Local Strands supervisor that runs Detection, Evaluation, Action in order and prints the plan (FR-SUP-1 to FR-SUP-3).
@@ -88,6 +88,8 @@ Choices made inside FR-ACT-1 to FR-ACT-3 and POL-1 to POL-4 where the PRD is sil
 - No LLM text in the Action step; all values come from the evaluation and the tools.
 
 ## Done log (newest first)
+
+- 2026-10-20: Added items 6 and 7 to `docs/prd_change_proposals.md` (PRD.md not edited): section 8 tool inputs and outputs that the code needs (`score_suppliers`, `predict_delay_risk`, `draft_po`, `submit_for_approval`, `release_po`, `get_supplier_history`), and the two agents both called "Evaluation" (FR-SEL and FR-EVA, FR-SUP-2), with option A (rename the code, recommended) or B (rename the FR-EVA agent in the PRD).
 
 - 2026-10-20: PRD checked against the code; three stale passages corrected (no requirement changed): section 5 Prediction row (`sap-rpt-1.6`, was sap-rpt-1-small), section 5 Explanations row (now versus target: direct Gen AI Hub model call with masking in code, orchestration with masking and grounding still to do, FR-SEL-4, FR-SEL-5), section 14 status column. The 12-18 Oct milestone here is now IN PROGRESS to match. The other mismatches found (proposals 1 to 5, tool contract inputs in section 8, the "Evaluation agent" name) wait for the team.
 
