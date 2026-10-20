@@ -1,67 +1,83 @@
-"""The reasoning model for the agents: Gemini Flash through the Strands Gemini provider.
+"""The reasoning model for the agents: GPT-5.4 on SAP Gen AI Hub (SAP AI Core), with
+Claude Sonnet 4.6 on the same Gen AI Hub as the fallback.
+
+Both models are deployments of the `foundation-models` scenario in SAP AI Core and are
+reached with the AI Core service key that SAP-RPT uses (integrations/sap/aicore.py):
+- GPT models through the Strands OpenAI provider, on the deployment's
+  `/chat/completions` endpoint (Azure OpenAI style, `api-version` query parameter).
+- `anthropic--` models through the Strands Bedrock provider, on the deployment's
+  `/converse` endpoint (Bedrock Converse format, AI Core bearer token instead of AWS signing).
 
 Environment variables (NFR-4, never hard-code keys):
-- `GEMINI_API_KEY`        required (`GOOGLE_API_KEY` is accepted too)
-- `GESIT_LLM_MODEL`       default `gemini-3.5-flash`, a fixed version so the demo cannot
-  change under us (NFR-2). The alias `gemini-flash-latest` returned HTTP 503 too often.
+- `AICORE_AUTH_URL`, `AICORE_CLIENT_ID`, `AICORE_CLIENT_SECRET`, `AICORE_BASE_URL`,
+  `AICORE_RESOURCE_GROUP` (default `default`); required.
+- `GESIT_LLM_MODEL`       default `gpt-5.4`, the Gen AI Hub model name, fixed so the demo
+  cannot change under us (NFR-2). The deployment's version is shown in `docs/testing.md`.
 - `GESIT_LLM_TEMPERATURE` default `0.2` (NFR-2: at or below 0.2). Set it to an
   empty string to leave the temperature at the model default.
-- `GESIT_LLM_FALLBACK_MODEL` default `gemini-2.5-flash`; a comma-separated list is
-  allowed, `none` switches the fallback off. A fallback model is used only when the
-  model before it is out of quota, runs out of output tokens twice, or is still
-  overloaded (HTTP 5xx) after its retries.
+- `GESIT_LLM_FALLBACK_MODEL` default `anthropic--claude-4.6-sonnet`; a comma-separated list
+  is allowed, `none` switches the fallback off. A fallback model is used only when the
+  model before it is not deployed, runs out of output tokens twice, is rate limited, or
+  is still overloaded (HTTP 5xx) after its retries.
 
-Quota (NFR-1, NFR-6): Gemini counts quotas per model. A 429 for a per-day quota, or
-one that asks to wait longer than QUOTA_SWITCH_SECONDS, marks the model as used up
-for the rest of the process and the next model in the chain answers. A short
-per-minute 429 is waited out and retried. When every model is used up the call
-fails at once with `LlmQuotaExceeded`; it never sits in a long retry loop.
+Rate limits (NFR-1, NFR-6): an HTTP 429 is retried on the same model after
+LLM_RETRY_WAITS_SECONDS. A model still rate limited after that is skipped for the rest
+of the process and the next model in the chain answers. When every model is rate
+limited the call fails at once with `LlmQuotaExceeded`; it never sits in a long retry loop.
 
-Overload (NFR-1, NFR-6): an HTTP 503 "model is overloaded" from Gemini is retried on
-the same model after LLM_RETRY_WAITS_SECONDS (with a little jitter). If the model is
-still overloaded, the next model in the chain answers this call only; the next call
-tries the main model again, because an overload usually passes within a minute.
+Overload (NFR-1, NFR-6): an HTTP 5xx or a lost connection is retried the same way. If
+the model is still unavailable, the next model in the chain answers this call only; the
+next call tries the main model again, because an overload usually passes within a minute.
 """
 from __future__ import annotations
 
 import os
 import random
-import re
 import time
 from typing import Any, Mapping
 
-DEFAULT_MODEL_ID = "gemini-3.5-flash"
-DEFAULT_FALLBACK_MODELS = "gemini-2.5-flash"
+from integrations.sap import aicore
+
+DEFAULT_MODEL_ID = "gpt-5.4"
+DEFAULT_FALLBACK_MODELS = "anthropic--claude-4.6-sonnet"
 NO_FALLBACK = "none"
 DEFAULT_TEMPERATURE = "0.2"
 MAX_TEMPERATURE = 0.2
-# Flash models spend most of this budget on thinking, so it is far above the 120-word answer.
+ANTHROPIC_PREFIX = "anthropic--"        # Gen AI Hub names of the Claude models
+OPENAI_API_VERSION = "2025-04-01-preview"
+BEDROCK_REGION = "us-west-2"            # label for the Bedrock client only; AI Core serves the call
+REQUEST_TIMEOUT_SECONDS = 120.0
+# Far above the 120-word answer, in case the model spends tokens on reasoning first.
 # It is a ceiling, not a cost: only the tokens actually produced are counted.
 MAX_OUTPUT_TOKENS = 8192
 RETRY_OUTPUT_TOKENS = 32768     # second try when the first one runs out of output tokens
 
 # Waits before try 2, 3 and 4 on the same model after an overload (HTTP 5xx) or rate limit.
-# Two tries 2 and 4 s apart were too short: a 503 burst usually lasts longer than 6 s.
 LLM_RETRY_WAITS_SECONDS = (2.0, 5.0, 10.0)
 LLM_ATTEMPTS = len(LLM_RETRY_WAITS_SECONDS) + 1
 LLM_RETRY_JITTER = 0.25         # each wait is stretched by up to this share, at random
-QUOTA_SWITCH_SECONDS = 60.0     # a 429 asking to wait longer than this: switch model now
-MAX_QUOTA_WAIT_SECONDS = 30.0   # longest wait for a short (per-minute) 429
+
+# Exception class names (OpenAI SDK, botocore, requests) for a call that never got an answer.
+_CONNECTION_ERRORS = {"APIConnectionError", "APITimeoutError", "EndpointConnectionError",
+                      "ReadTimeoutError", "ConnectTimeoutError", "ConnectionClosedError"}
 
 
 class LlmUnavailable(RuntimeError):
-    """The reasoning model cannot be used (missing key or missing package)."""
+    """The reasoning model cannot be used (missing credentials, package or deployment)."""
 
 
 class LlmQuotaExceeded(LlmUnavailable):
-    """Every model in the chain is out of quota."""
+    """Every model in the chain is rate limited."""
 
 
-# Models found out of quota in this process: model id -> quota info (see `quota_info`).
-_USED_UP: dict[str, dict[str, Any]] = {}
-# Models that were still overloaded after their retries: model id -> number of calls.
+# Models still rate limited after their retries in this process: model id -> number of calls.
+_USED_UP: dict[str, int] = {}
+# Models still overloaded after their retries: model id -> (number of calls, last HTTP status).
 # Only reported in the run notes; an overloaded model is not skipped on later calls.
-_OVERLOADED: dict[str, int] = {}
+_OVERLOADED: dict[str, tuple[int, int | None]] = {}
+# Models that could not be built (for example not deployed): model id -> reason.
+_UNAVAILABLE: dict[str, str] = {}
+_SESSIONS: dict[aicore.AiCoreConfig, aicore.AiCoreSession] = {}
 
 
 def model_id(env: Mapping[str, str] | None = None) -> str:
@@ -70,7 +86,7 @@ def model_id(env: Mapping[str, str] | None = None) -> str:
 
 
 def fallback_model_ids(env: Mapping[str, str] | None = None) -> list[str]:
-    """Fallback models in order; `gemini-2.5-flash` unless the environment says otherwise."""
+    """Fallback models in order; Claude Sonnet 4.6 unless the environment says otherwise."""
     env = os.environ if env is None else env
     raw = env.get("GESIT_LLM_FALLBACK_MODEL", "").strip() or DEFAULT_FALLBACK_MODELS
     if raw.lower() == NO_FALLBACK:
@@ -105,90 +121,122 @@ def model_params(env: Mapping[str, str] | None = None,
     return params
 
 
+def is_anthropic(model: str) -> bool:
+    return model.startswith(ANTHROPIC_PREFIX)
+
+
 def build_model(env: Mapping[str, str] | None = None, model: str | None = None,
                 max_output_tokens: int = MAX_OUTPUT_TOKENS) -> Any:
-    """A Strands `GeminiModel` for Gemini Flash (or `model`), or `LlmUnavailable`."""
+    """A Strands model for `model` (default `GESIT_LLM_MODEL`) on SAP Gen AI Hub,
+    or `LlmUnavailable`."""
     env = os.environ if env is None else env
-    api_key = env.get("GEMINI_API_KEY") or env.get("GOOGLE_API_KEY")
-    if not api_key:
-        raise LlmUnavailable("GEMINI_API_KEY is not set")
+    name = model or model_id(env)
+    session = aicore_session(env)
     try:
-        from strands.models.gemini import GeminiModel
+        deployment = session.deployment(name)
+        token = session.token()
+    except aicore.AiCoreUnavailable as exc:
+        raise LlmUnavailable(str(exc)) from exc
+    params = model_params(env, max_output_tokens)
+    if is_anthropic(name):
+        return _bedrock_model(deployment, token, session.config.resource_group, params)
+    return _openai_model(deployment, token, session.config.resource_group, params)
+
+
+def aicore_session(env: Mapping[str, str] | None = None) -> aicore.AiCoreSession:
+    """One AI Core session per service key, so the token and deployment lookups are reused."""
+    config = aicore.config_from_env(env)
+    if config is None:
+        raise LlmUnavailable("SAP AI Core credentials (AICORE_*) are not set")
+    if config not in _SESSIONS:
+        _SESSIONS[config] = aicore.AiCoreSession(config)
+    return _SESSIONS[config]
+
+
+def openai_params(params: Mapping[str, Any]) -> dict[str, Any]:
+    """Chat completions parameters: GPT-5 models take `max_completion_tokens`."""
+    out: dict[str, Any] = {"max_completion_tokens": params["max_output_tokens"], "stream": False}
+    if "temperature" in params:
+        out["temperature"] = params["temperature"]
+    return out
+
+
+def bedrock_params(params: Mapping[str, Any]) -> dict[str, Any]:
+    """Bedrock Converse parameters (inferenceConfig)."""
+    out: dict[str, Any] = {"max_tokens": params["max_output_tokens"], "streaming": False}
+    if "temperature" in params:
+        out["temperature"] = params["temperature"]
+    return out
+
+
+def _openai_model(deployment: aicore.Deployment, token: str, resource_group: str,
+                  params: Mapping[str, Any]) -> Any:
+    try:
+        from strands.models.openai import OpenAIModel
     except ImportError as exc:
-        raise LlmUnavailable("strands-agents[gemini] is not installed") from exc
-    return GeminiModel(client_args={"api_key": api_key}, model_id=model or model_id(env),
-                       params=model_params(env, max_output_tokens))
+        raise LlmUnavailable("strands-agents[openai] is not installed") from exc
+    client_args = {"api_key": token, "base_url": deployment.url,
+                   "default_headers": {"AI-Resource-Group": resource_group},
+                   "default_query": {"api-version": OPENAI_API_VERSION},
+                   "max_retries": 0, "timeout": REQUEST_TIMEOUT_SECONDS}
+    return OpenAIModel(client_args=client_args, model_id=deployment.model,
+                       params=openai_params(params))
 
 
-# ------------------------------------------------------------------ quota
-def _seconds(text: Any) -> float | None:
-    """'48700s' or '12.5s' (protobuf duration) as seconds."""
-    match = re.fullmatch(r"\s*([\d.]+)s\s*", str(text or ""))
-    return float(match.group(1)) if match else None
+def _bedrock_model(deployment: aicore.Deployment, token: str, resource_group: str,
+                   params: Mapping[str, Any]) -> Any:
+    try:
+        from botocore.config import Config
+        from strands.models.bedrock import BedrockModel
+    except ImportError as exc:
+        raise LlmUnavailable("strands-agents (Bedrock provider) is not installed") from exc
+    model = BedrockModel(model_id=deployment.model, region_name=BEDROCK_REGION,
+                         endpoint_url=deployment.url, api_key=token,
+                         boto_client_config=Config(retries={"max_attempts": 1},
+                                                   read_timeout=REQUEST_TIMEOUT_SECONDS),
+                         **bedrock_params(params))
+
+    def to_aicore(request: Any, **_: Any) -> None:
+        # Bedrock's path is /model/<id>/converse; AI Core's is <deployment url>/converse.
+        request.url = deployment.url + "/converse"
+        request.headers["AI-Resource-Group"] = resource_group
+
+    model.client.meta.events.register("before-send.bedrock-runtime.Converse", to_aicore)
+    return model
 
 
-def quota_info(exc: BaseException) -> dict[str, Any] | None:
-    """For a Gemini 429 (raised directly or wrapped by Strands): the quota ids it names and
-    the wait it asks for. None when the error is not a 429."""
-    chain: list[BaseException] = []
-    error: BaseException | None = exc
-    while error is not None and len(chain) < 6:
-        chain.append(error)
-        error = error.__cause__ or error.__context__
-    # The Gemini ClientError (code 429) carries the details; Strands wraps it.
-    hit = next((e for e in chain if getattr(e, "code", None) == 429), None)
-    if hit is None:
-        hit = next((e for e in chain if "RESOURCE_EXHAUSTED" in str(e)[:500]), None)
-    if hit is None:
-        return None
-    details = getattr(hit, "details", None) or {}
-    items = (details.get("error", {}).get("details") or []) if isinstance(details, dict) else []
-    quota_ids, retry = [], None
-    for item in items:
-        kind = str(item.get("@type", "")).rsplit(".", 1)[-1]
-        if kind == "QuotaFailure":
-            quota_ids += [v.get("quotaId", "") for v in item.get("violations", [])]
-        elif kind == "RetryInfo":
-            retry = _seconds(item.get("retryDelay"))
-    return {"QUOTA_IDS": [q for q in quota_ids if q], "RETRY_SECONDS": retry}
-
-
-def is_used_up(info: Mapping[str, Any]) -> bool:
-    """A per-day quota, or a wait longer than QUOTA_SWITCH_SECONDS: do not wait, switch model."""
-    retry = info.get("RETRY_SECONDS")
-    return (any("PerDay" in q for q in info.get("QUOTA_IDS", []))
-            or (retry is not None and retry > QUOTA_SWITCH_SECONDS))
-
-
-def used_up_models() -> dict[str, dict[str, Any]]:
-    """Models found out of quota in this process, for the run report."""
+# ------------------------------------------------------------------ run notes
+def used_up_models() -> dict[str, int]:
+    """Models still rate limited after their retries in this process."""
     return dict(_USED_UP)
 
 
-def overloaded_models() -> dict[str, int]:
-    """Models that stayed overloaded after their retries in this process, with the number
-    of calls the next model answered instead, for the run report."""
+def overloaded_models() -> dict[str, tuple[int, int | None]]:
+    """Models that stayed overloaded after their retries, with the number of calls the
+    next model answered instead and the last HTTP status."""
     return dict(_OVERLOADED)
 
 
 def reset_quota_memory() -> None:
-    """Forget used-up and overloaded models (tests, or a long-running process)."""
+    """Forget rate-limited, overloaded and unavailable models (tests, or a long-running process)."""
     _USED_UP.clear()
     _OVERLOADED.clear()
+    _UNAVAILABLE.clear()
 
 
-def overload_note(model: str, calls: int) -> str:
-    """'gemini-3.5-flash overloaded (HTTP 503) on 1 call'."""
-    return f"{model} overloaded (HTTP 503) on {calls} call{'s' if calls != 1 else ''}"
+def run_notes() -> list[str]:
+    """One line per model that did not answer every call, for the run report (NFR-1, NFR-6)."""
+    notes = [f"{model} unavailable ({reason})" for model, reason in _UNAVAILABLE.items()]
+    notes += [f"{model} rate limited (HTTP 429) after retries, skipped for the rest of the run"
+              for model in _USED_UP]
+    notes += [overload_note(model, calls, status) for model, (calls, status) in _OVERLOADED.items()]
+    return notes
 
 
-def quota_note(model: str, info: Mapping[str, Any]) -> str:
-    """'gemini-3.5-flash out of quota (GenerateRequestsPerDay..., retry in 13.5 h)'."""
-    parts = [", ".join(info.get("QUOTA_IDS") or []) or "rate limit"]
-    retry = info.get("RETRY_SECONDS")
-    if retry is not None:
-        parts.append(f"retry in {retry / 3600:.1f} h" if retry >= 3600 else f"retry in {retry:.0f} s")
-    return f"{model} out of quota ({', '.join(parts)})"
+def overload_note(model: str, calls: int, status: int | None = None) -> str:
+    """'gpt-5.4 overloaded (HTTP 503) on 1 call'."""
+    cause = f"HTTP {status}" if status else "no connection"
+    return f"{model} overloaded ({cause}) on {calls} call{'s' if calls != 1 else ''}"
 
 
 # ------------------------------------------------------------------ one answer
@@ -196,43 +244,51 @@ def complete(system_prompt: str, prompt: str) -> tuple[str, str]:
     """One answer from a Strands agent without tools; returns the text and the model that wrote it.
 
     Walks `model_plan()`: a model that runs out of output tokens is retried with the larger
-    budget, then the next model is used; a model that is out of quota is skipped at once;
-    a model still overloaded after the retries in `_ask` is skipped for this call only.
+    budget, then the next model is used; a model that cannot be built or is rate limited
+    is skipped; a model still overloaded after the retries in `_ask` is skipped for this
+    call only.
     """
     last: Exception | None = None
     overload: Exception | None = None
-    overloaded_now: set[str] = set()
+    skipped_now: set[str] = set()
     for model_name, max_output_tokens in model_plan():
-        if model_name in _USED_UP or model_name in overloaded_now:
+        if model_name in _USED_UP or model_name in skipped_now:
             continue
-        model = build_model(model=model_name, max_output_tokens=max_output_tokens)
+        try:
+            model = build_model(model=model_name, max_output_tokens=max_output_tokens)
+        except LlmUnavailable as exc:
+            _UNAVAILABLE[model_name] = str(exc)
+            skipped_now.add(model_name)
+            last = last or exc
+            continue
         try:
             return _ask(model, system_prompt, prompt), model_name
         except Exception as exc:
             last = exc
-            info = quota_info(exc)
-            if info is not None:               # any 429 that _ask did not wait out
-                _USED_UP[model_name] = info
-                continue
             if _is_out_of_tokens(exc):
                 continue
+            status = http_status(exc)
+            if status == 429 or _is_throttled(exc):
+                _USED_UP[model_name] = _USED_UP.get(model_name, 0) + 1
+                continue
             if _is_server_error(exc):          # 5xx after every retry: next model, this call only
-                overloaded_now.add(model_name)
-                _OVERLOADED[model_name] = _OVERLOADED.get(model_name, 0) + 1
+                skipped_now.add(model_name)
+                calls = _OVERLOADED.get(model_name, (0, None))[0] + 1
+                _OVERLOADED[model_name] = (calls, status)
                 overload = exc
                 continue
             raise
-    if overload is not None:                   # a 503 explains more than a later quota error
+    if overload is not None:                   # an overload explains more than a later rate limit
         raise overload
-    if last is None or quota_info(last) is not None:
-        raise LlmQuotaExceeded("Gemini quota used up on every model: " + "; ".join(
-            quota_note(m, i) for m, i in _USED_UP.items()))
+    if last is None or http_status(last) == 429 or _is_throttled(last):
+        raise LlmQuotaExceeded("every Gen AI Hub model is rate limited: "
+                               + (", ".join(_USED_UP) or "no model in the chain"))
     raise last
 
 
 def _retry_strategy() -> Any:
-    """Strands' own retry off: by default it retries a 429 six times over about 4 minutes,
-    which hid a used-up quota as a silent hang. GESIT does its own short retries."""
+    """Strands' own retry off: by default it retries a throttled call six times over about
+    4 minutes, which looks like a silent hang. GESIT does its own short retries."""
     try:
         from strands import ModelRetryStrategy
     except ImportError:   # older strands-agents without the option
@@ -254,13 +310,9 @@ def _ask(model: Any, system_prompt: str, prompt: str) -> str:
         try:
             return str(agent(prompt))
         except Exception as exc:
-            info = quota_info(exc)
-            if info is not None and is_used_up(info):
-                raise                          # waiting will not help, switch model
             if attempt == LLM_ATTEMPTS or not _is_transient(exc):
                 raise
-            wait = (info or {}).get("RETRY_SECONDS") or retry_wait(attempt)
-            time.sleep(min(wait, MAX_QUOTA_WAIT_SECONDS))
+            time.sleep(retry_wait(attempt))
     raise AssertionError("unreachable")
 
 
@@ -272,18 +324,53 @@ def retry_wait(attempt: int) -> float:
     return base * (1.0 + random.uniform(0.0, LLM_RETRY_JITTER))
 
 
+def _chain(exc: BaseException) -> list[BaseException]:
+    """The exception and its causes; Strands wraps the provider's error."""
+    found: list[BaseException] = []
+    error: BaseException | None = exc
+    while error is not None and len(found) < 6:
+        found.append(error)
+        error = error.__cause__ or error.__context__
+    return found
+
+
+def http_status(exc: BaseException) -> int | None:
+    """HTTP status of a provider error: OpenAI SDK `status_code`, botocore
+    `ResponseMetadata.HTTPStatusCode`, or an integer `code`."""
+    for error in _chain(exc):
+        status = getattr(error, "status_code", None)
+        if isinstance(status, int):
+            return status
+        response = getattr(error, "response", None)
+        if isinstance(response, dict):
+            status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            if isinstance(status, int):
+                return status
+        code = getattr(error, "code", None)
+        if isinstance(code, int):
+            return code
+    return None
+
+
 def _is_transient(exc: Exception) -> bool:
-    """Overload (HTTP 5xx) and rate-limit errors are worth one more try."""
-    return _is_server_error(exc) or type(exc).__name__ == "ModelThrottledException"
+    """Overload (HTTP 5xx), lost connections and rate limits are worth one more try."""
+    return _is_server_error(exc) or _is_throttled(exc) or http_status(exc) == 429
 
 
-def _is_server_error(exc: Exception) -> bool:
-    """Gemini's ServerError (HTTP 5xx, e.g. 503 UNAVAILABLE 'The model is overloaded')."""
-    return type(exc).__name__ == "ServerError"
+def _is_throttled(exc: BaseException) -> bool:
+    return any(type(e).__name__ == "ModelThrottledException" for e in _chain(exc))
+
+
+def _is_server_error(exc: BaseException) -> bool:
+    """HTTP 5xx (e.g. 503 'model is overloaded') or no answer at all (connection, timeout)."""
+    status = http_status(exc)
+    if status is not None and status >= 500:
+        return True
+    return any(type(e).__name__ in _CONNECTION_ERRORS for e in _chain(exc))
 
 
 def _is_out_of_tokens(exc: Exception) -> bool:
-    """The answer was cut off at the output token budget (Gemini finish reason MAX_TOKENS)."""
+    """The answer was cut off at the output token budget (finish reason length / max_tokens)."""
     return type(exc).__name__ == "MaxTokensReachedException"
 
 
@@ -291,9 +378,5 @@ def error_detail(exc: Exception) -> str:
     """Short, key-free description of a model failure, with the HTTP code when there is one."""
     if isinstance(exc, LlmUnavailable):
         return str(exc)
-    parts = [type(exc).__name__]
-    for attribute in ("code", "status"):
-        value = getattr(exc, attribute, None)
-        if isinstance(value, (int, str)) and value != "":
-            parts.append(str(value))
-    return " ".join(parts)
+    status = http_status(exc)
+    return type(exc).__name__ + (f" HTTP {status}" if status else "")

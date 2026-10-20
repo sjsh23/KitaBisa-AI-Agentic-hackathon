@@ -137,17 +137,17 @@ def test_reasoning_is_tidied(adapter):
 
 def test_run_survives_missing_llm(adapter):
     def reasoner(facts):
-        raise llm.LlmUnavailable("GEMINI_API_KEY is not set")
+        raise llm.LlmUnavailable("SAP AI Core credentials (AICORE_*) are not set")
 
     report = make_agent(adapter, {}, reasoner).run(MATNR)
     assert report["REASONING"] is None
-    assert "GEMINI_API_KEY is not set" in report["REASONING_ERROR"]
+    assert "(AICORE_*) are not set" in report["REASONING_ERROR"]
     assert "not available" in format_report(report)
 
 
 def test_llm_settings():
-    assert llm.model_id({}) == "gemini-3.5-flash"
-    assert llm.model_id({"GESIT_LLM_MODEL": "gemini-2.5-flash"}) == "gemini-2.5-flash"
+    assert llm.model_id({}) == "gpt-5.4"
+    assert llm.model_id({"GESIT_LLM_MODEL": "anthropic--claude-4.6-sonnet"}) == "anthropic--claude-4.6-sonnet"
     assert llm.model_params({})["temperature"] == 0.2
     assert llm.model_params({"GESIT_LLM_TEMPERATURE": "0.9"})["temperature"] == 0.2   # NFR-2 cap
     assert "temperature" not in llm.model_params({"GESIT_LLM_TEMPERATURE": ""})
@@ -158,9 +158,9 @@ def test_llm_settings():
 def test_llm_model_plan():
     main = (llm.DEFAULT_MODEL_ID, llm.MAX_OUTPUT_TOKENS)
     retry = (llm.DEFAULT_MODEL_ID, llm.RETRY_OUTPUT_TOKENS)
-    fallback = [("gemini-2.5-flash", llm.MAX_OUTPUT_TOKENS),
-                ("gemini-2.5-flash", llm.RETRY_OUTPUT_TOKENS)]
-    assert llm.model_plan({}) == [main, retry] + fallback          # gemini-2.5-flash by default
+    fallback = [("anthropic--claude-4.6-sonnet", llm.MAX_OUTPUT_TOKENS),
+                ("anthropic--claude-4.6-sonnet", llm.RETRY_OUTPUT_TOKENS)]
+    assert llm.model_plan({}) == [main, retry] + fallback          # Claude Sonnet 4.6 by default
     assert llm.model_plan({"GESIT_LLM_FALLBACK_MODEL": "none"}) == [main, retry]
     assert llm.model_plan({"GESIT_LLM_FALLBACK_MODEL": llm.DEFAULT_MODEL_ID}) == [main, retry]
     assert llm.model_params({}, 4096)["max_output_tokens"] == 4096
@@ -170,7 +170,7 @@ class MaxTokensReachedException(Exception):
     """Same class name as the Strands exception the reasoner looks for."""
 
 
-def run_reasoner(monkeypatch, failing_steps, fallback="gemini-2.5-flash"):
+def run_reasoner(monkeypatch, failing_steps, fallback="anthropic--claude-4.6-sonnet"):
     """`llm_reasoner` with a fake model call that runs out of tokens on `failing_steps`."""
     calls = []
 
@@ -195,14 +195,14 @@ def test_reasoner_retries_with_larger_budget_then_fallback_model(monkeypatch):
     answer, calls = run_reasoner(monkeypatch, (1,))
     assert answer == ("assessment", main) and calls[-1] == (main, retry)
     answer, calls = run_reasoner(monkeypatch, (1, 2))
-    assert answer == ("assessment", "gemini-2.5-flash") and len(calls) == 3
+    assert answer == ("assessment", "anthropic--claude-4.6-sonnet") and len(calls) == 3
     with pytest.raises(MaxTokensReachedException):
         run_reasoner(monkeypatch, (1, 2), fallback="none")
 
 
 def test_run_reports_the_model_that_answered(adapter):
-    report = make_agent(adapter, {}, lambda facts: (" ok ", "gemini-2.5-flash")).run(MATNR)
-    assert report["REASONING"] == "ok" and report["REASONING_MODEL"] == "gemini-2.5-flash"
+    report = make_agent(adapter, {}, lambda facts: (" ok ", "anthropic--claude-4.6-sonnet")).run(MATNR)
+    assert report["REASONING"] == "ok" and report["REASONING_MODEL"] == "anthropic--claude-4.6-sonnet"
 
 
 def test_unknown_scenario_exits(adapter):

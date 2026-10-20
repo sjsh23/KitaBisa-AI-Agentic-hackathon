@@ -9,9 +9,11 @@ with `py -3.11`. On macOS or Linux use `python` instead. Run everything from the
 repository root.
 
 Steps 1 to 4 need no credentials and no network. Steps 5 to 7 call the real
-SAP-RPT-1.6 deployment and the real Gemini Flash endpoint. Detection ran against
-both on 9 and 11 October 2026 and Supplier Evaluation on 15 October 2026 (single
-runs, see `WORKING.md`); the ten-run check in step 7 is still open.
+SAP-RPT-1.6 deployment and the real reasoning models on SAP Gen AI Hub (GPT-5.4,
+fallback Claude Sonnet 4.6, both on SAP AI Core since 20 October 2026; Gemini Flash
+before that). Detection ran against the real services on 9 and 11 October 2026,
+Supplier Evaluation on 15 October and S1 with GPT-5.4 on 20 October (single runs, see
+`WORKING.md`); the ten-run check in step 7 is still open.
 
 ## Step 1: Install
 
@@ -22,11 +24,11 @@ py -3.11 -m pip install -r requirements.txt
 Check:
 
 ```powershell
-py -3.11 -c "import strands, google.genai, scipy, requests, dotenv; print('ok')"
+py -3.11 -c "import strands, openai, boto3, scipy, requests, dotenv; print('ok')"
 ```
 
-Expected: `ok`. If `strands` is missing, the detection still runs, but the
-Gemini Flash assessment is skipped with "strands-agents[gemini] is not installed".
+Expected: `ok`. If `openai` is missing, the detection still runs, but the
+assessment is skipped with "strands-agents[openai] is not installed".
 
 ## Step 2: Credentials
 
@@ -41,13 +43,12 @@ Then fill in `.env`:
 
 | Variable | Needed for | Notes |
 |---|---|---|
-| `GEMINI_API_KEY` | Gemini Flash assessment | From Google AI Studio. `GOOGLE_API_KEY` works too |
-| `GESIT_LLM_MODEL` | Gemini Flash assessment | Optional. Default `gemini-3.5-flash`, a fixed version |
-| `GESIT_LLM_FALLBACK_MODEL` | Gemini Flash assessment and explanation | Optional. Empty means `gemini-2.5-flash`; a comma-separated list is allowed; `none` switches the fallback off. A fallback model answers only when the model before it is out of quota or runs out of output tokens twice |
-| `AICORE_AUTH_URL` | SAP-RPT-1.6 on AI Core | Must start with `https://`. `/oauth/token` is added by the code |
-| `AICORE_CLIENT_ID`, `AICORE_CLIENT_SECRET` | SAP-RPT-1.6 on AI Core | From the AI Core service key |
-| `AICORE_BASE_URL` | SAP-RPT-1.6 on AI Core | The `AI_API_URL` of the service key, with or without `/v2` |
-| `AICORE_RESOURCE_GROUP` | SAP-RPT-1.6 on AI Core | Default `default` |
+| `AICORE_AUTH_URL` | SAP-RPT-1.6 and the Gen AI Hub models on AI Core | Must start with `https://`. `/oauth/token` is added by the code |
+| `AICORE_CLIENT_ID`, `AICORE_CLIENT_SECRET` | SAP-RPT-1.6 and the Gen AI Hub models | From the AI Core service key |
+| `AICORE_BASE_URL` | SAP-RPT-1.6 and the Gen AI Hub models | The `AI_API_URL` of the service key, with or without `/v2` |
+| `AICORE_RESOURCE_GROUP` | SAP-RPT-1.6 and the Gen AI Hub models | Default `default`. The `gpt-5.4` and `anthropic--claude-4.6-sonnet` deployments must be RUNNING in this resource group |
+| `GESIT_LLM_MODEL` | Assessment and explanation | Optional. Default `gpt-5.4`, the Gen AI Hub model name. The deployment is found by name; on 20 October 2026 it was version `2026-03-05` |
+| `GESIT_LLM_FALLBACK_MODEL` | Assessment and explanation | Optional. Empty means `anthropic--claude-4.6-sonnet`; a comma-separated list is allowed; `none` switches the fallback off. A fallback model answers only when the model before it is not deployed, is rate limited, stays overloaded, or runs out of output tokens twice |
 | `SAP_RPT_DEPLOYMENT_ID` | SAP-RPT-1.6 on AI Core | The id of the running SAP-RPT deployment |
 | `SAP_RPT_API_TOKEN` | Public RPT API (development only) | Alternative to the six AI Core variables |
 
@@ -66,7 +67,7 @@ git diff --cached --name-only
 py -3.11 -m pytest -q
 ```
 
-Expected: `117 passed`. The tests never call the network: SAP-RPT and Gemini Flash are replaced by fakes.
+Expected: `161 passed`. The tests never call the network: SAP-RPT, SAP AI Core and the reasoning models are replaced by fakes.
 
 | Test file | What it proves | Requirements |
 |---|---|---|
@@ -89,7 +90,7 @@ py -3.11 -m pytest tests/test_detection_agent.py -k s1 -q
 
 ## Step 4: Detection and Supplier Evaluation without credentials (offline)
 
-This checks the deterministic part and the fallback (FR-DET-4). `--no-llm` skips Gemini Flash.
+This checks the deterministic part and the fallback (FR-DET-4). `--no-llm` skips the reasoning model.
 If `.env` already holds SAP credentials, set `SAP_RPT_MODE` to `none` for this step
 (`$env:SAP_RPT_MODE = "none"` in PowerShell) or the real SAP-RPT is called.
 
@@ -117,7 +118,7 @@ Flagged, most urgent first: 4500000431
 ```
 
 Below the table the GAP line reads "-3 = arrives 3 days before stock runs out, +5 = arrives
-5 days after (too late)". The Gemini assessment gets the gap in words only
+5 days after (too late)". The model's assessment gets the gap in words only
 (ARRIVAL_VS_STOCKOUT, for example "arrives 3 days before stock runs out"), never as a signed
 number, so it should never write "-3 days after stock runs out".
 
@@ -238,15 +239,16 @@ Things to record on the first successful call, because they are still assumption
 - The response gives a class (`LATE` or `ON_TIME`) with a `confidence`. The code reads P(late) as the confidence when the class is `LATE`, and 1 minus the confidence otherwise.
 - How long the call takes (NFR-1) and how many rows were sent (414 context rows plus 5 query rows).
 
-## Step 6: Gemini Flash assessment (network)
+## Step 6: Model texts on SAP Gen AI Hub (network)
 
-Needs `GEMINI_API_KEY` in `.env`.
+Needs the `AICORE_*` variables in `.env` (the same service key as SAP-RPT) and RUNNING
+`gpt-5.4` and `anthropic--claude-4.6-sonnet` deployments in the resource group.
 
 ```powershell
 py -3.11 -m agents.run S1
 ```
 
-Pass when the output ends with an `Assessment (gemini-3.5-flash):` block that:
+Pass when the output ends with an `Assessment (gpt-5.4):` block that:
 
 - names PO 4500000431 and supplier 100101 (by number, never by company name),
 - says the goods arrive 5 days after the stock-out date 2026-10-06,
@@ -258,16 +260,16 @@ If it says `not available (reasoning model unavailable: ...)`:
 
 | Message | Fix |
 |---|---|
-| `GEMINI_API_KEY is not set` | Add the key to `.env` (step 2) |
-| `strands-agents[gemini] is not installed` | Step 1 |
-| `ClientError` | Wrong or revoked key, an unknown model id in `GESIT_LLM_MODEL`, or the rate limit of the key was reached. Check the key in Google AI Studio and try a fixed id such as `gemini-2.5-flash` |
-| `Gemini quota used up on every model: ...` | Every model in the chain returned HTTP 429 for a used-up quota. The message names each quota and when it resets (the free tier allows 20 requests per day per model). Wait for the reset, add another model to `GESIT_LLM_FALLBACK_MODEL`, or enable billing on the key. The ranked tables are still printed |
-| `ModelThrottledException` | A short (per-minute) rate limit that did not clear after four tries; wait a minute and rerun |
-| `MaxTokensReachedException` | The model used its whole output budget, mostly on thinking, before finishing the answer. The agent already retries with a larger budget (8,192, then 32,768 tokens). If it still fails, the fallback model (`gemini-2.5-flash` by default) answers; the `Assessment (...)` line shows which model answered |
-| `ServerError 503 UNAVAILABLE` | Google's servers are overloaded; nothing is wrong with the request. The agent tries each model four times (waits of about 2, 5 and 10 s) and then the next model in the chain, so this message means every model stayed overloaded for that call. Rerun in a minute, and check that `GESIT_LLM_MODEL` is not set to `gemini-flash-latest`, which showed this error often on 9 October 2026 |
+| `SAP AI Core credentials (AICORE_*) are not set` | Add the AI Core variables to `.env` (step 2) |
+| `strands-agents[openai] is not installed` | Step 1 |
+| `SAP AI Core token request returned HTTP 401` | Wrong client id or secret, or an expired service key |
+| `no RUNNING SAP AI Core deployment for ...` | The model is not deployed in `AICORE_RESOURCE_GROUP`, or `GESIT_LLM_MODEL` holds a wrong name. Check the deployments in SAP AI Launchpad. When only the main model is missing, the fallback answers and the `LLM notes` line names the missing one |
+| `every Gen AI Hub model is rate limited: ...` | Every model in the chain still returned HTTP 429 after four tries. Wait a minute and rerun; the ranked tables are still printed |
+| `MaxTokensReachedException` | The model used its whole output budget before finishing the answer. The agent already retries with a larger budget (8,192, then 32,768 tokens). If it still fails, the fallback model answers; the `Assessment (...)` line shows which model answered |
+| `InternalServerError HTTP 503` (or another 5xx) | Gen AI Hub is overloaded; nothing is wrong with the request. The agent tries each model four times (waits of about 2, 5 and 10 s) and then the next model in the chain, so this message means every model stayed overloaded for that call. Rerun in a minute |
 
 Then the Supplier Evaluation explanation, one per replacement case. Pass when each
-`Explanation (gemini-3.5-flash):` block:
+`Explanation (gpt-5.4):` block:
 
 - recommends the #1 supplier by LIFNR and says why it beats the cheapest and the fastest
   (or that it is one of them): the cost gap plus the reason, for example "mainly from extra
@@ -290,30 +292,37 @@ punctuation, no double spaces or spaces at a line end, and known misspellings co
 Numbers are never changed. When something was fixed, a line `Text tidied in code: ...`
 under the text lists the fixes (JSON: `REASONING_FIXES`, `EXPLANATION_FIXES`).
 
-The header line `Explanation call:` shows the model (`gemini-3.5-flash`), the temperature
-(0.2 or lower, NFR-2) and the masking: names are masked in code and checked before every
-call; if a supplier or buyer name would reach the model, the call is not made and the
-explanation says "masking check failed". SAP Gen AI Hub is not connected yet, so no Gen AI
-Hub masking setting applies.
+The header line `Explanation call:` shows the model (`gpt-5.4`) and its fallback, the
+temperature (0.2 or lower, NFR-2; GPT-5.4 on Gen AI Hub accepted 0.2 on 20 October 2026) and
+the masking: names are masked in code and checked before every call; if a supplier or buyer
+name would reach the model, the call is not made and the explanation says "masking check
+failed". Gen AI Hub serves the model, but its orchestration service (masking and contract
+grounding modules) is not used yet.
 
-When the main model is out of quota the run does not stop or hang. Gemini returns
-HTTP 429 in under a second, the model is marked used up for the rest of the run, the
-fallback model answers, and the output ends with a line such as:
+To test the fallback, point the main model at a name that is not deployed:
+
+```powershell
+$env:GESIT_LLM_MODEL = "gpt-not-deployed"; py -3.11 -m agents.run S2; Remove-Item Env:GESIT_LLM_MODEL
+```
+
+Pass when the texts come from `anthropic--claude-4.6-sonnet`, the explanation check passes
+and the output ends with:
 
 ```
-LLM notes: gemini-3.5-flash out of quota (GenerateRequestsPerDayPerProjectPerModel-FreeTier, retry in 10.6 h). The next model in the chain was tried (see the model name above each text).
+LLM notes: gpt-not-deployed unavailable (no RUNNING SAP AI Core deployment for gpt-not-deployed in resource group default). The next model in the chain was tried (see the model name above each text).
 ```
 
-Each `Assessment (...)` and `Explanation (...)` line names the model that wrote it. With
-`--json` the same notes are in `LLM_NOTES`. On 15 October 2026 `all` ran this way in 42
-seconds, every text from `gemini-2.5-flash`, every explanation check passed.
+On 20 October 2026 this run took 27 s and the check passed. Each `Assessment (...)` and
+`Explanation (...)` line names the model that wrote it. With `--json` the same notes are
+in `LLM_NOTES`.
 
-When the main model answers HTTP 503 (overloaded) the agent waits about 2, 5 and 10 s
-between tries (about 17 s in all), then the fallback model answers that one call. The next
-call tries the main model again, so one run can mix models. The notes line then also says,
-for example, `gemini-3.5-flash overloaded (HTTP 503) on 1 call`. If both models stay
-overloaded, one call can take about 35 s before it gives up, so a run with four texts can
-exceed the 60 s target of NFR-1 when Google is overloaded.
+When the main model answers HTTP 429 (rate limited) or 5xx (overloaded), the agent waits
+about 2, 5 and 10 s between tries (about 17 s in all), then the fallback model answers. A
+model still rate limited after the retries is skipped for the rest of the run; an
+overloaded one only for that call, so one run can mix models. The notes line then says, for
+example, `gpt-5.4 overloaded (HTTP 503) on 1 call`. If both models stay overloaded, one call
+can take about 35 s before it gives up, so a run with four texts can exceed the 60 s target
+of NFR-1.
 
 ## Step 7: Full run and repeatability (network)
 
@@ -338,15 +347,16 @@ detection report alone, as before). Check:
 Then run `py -3.11 -m agents.run S1` ten times (NFR-6). The detection table, the
 flagged list and the ranked supplier table must be the same every time. The
 assessment and explanation wording may vary slightly; their numbers must not.
-One S1 run took 33 seconds on 15 October 2026 (two SAP-RPT calls, two Gemini calls;
-NFR-1 allows 60, target 20).
+One S1 run took 33 seconds on 15 October 2026 with Gemini Flash and 53 seconds on
+20 October 2026 with GPT-5.4 (two SAP-RPT calls, two model calls; NFR-1 allows 60,
+target 20). Time the ten runs: if S1 stays near 60 s, report it to the team.
 
 ## What to report back
 
 After steps 5 to 7, update `WORKING.md` (status of section 7.2, done log) with:
 
 1. SAP-RPT: worked or not, the `P_LATE` of the five open POs, call time.
-2. Gemini Flash: worked or not, and which model id was used.
+2. Gen AI Hub models: worked or not, which model answered each text, and any `LLM notes` line.
 3. Supplier Evaluation: the #1, cheapest and fastest supplier per scenario, and every
    explanation check that did not pass.
 4. Any scenario whose flagged list differs from step 4, and why (a real SAP-RPT `P_LATE` at or above 0.5 adds a "PREDICTED_LATE" flag, which is expected behaviour).
@@ -357,6 +367,6 @@ Integrity Guard, the supervisor, Cedar policies on AgentCore and the Joule UI do
 not exist yet, so there is nothing to test for them. The Action agent's policies
 POL-1 to POL-4 run as local Python (`policy/local_policy.py`, tests in
 `tests/test_policy.py`) until AgentCore Policy is set up. The Supplier Evaluation
-explanation comes from Gemini Flash until SAP Gen AI Hub is connected (FR-SEL-4,
-FR-SEL-5), so contract grounding cannot be tested yet. Add a section here when
+explanation comes from GPT-5.4 on Gen AI Hub without the orchestration service, so Gen
+AI Hub masking and contract grounding (FR-SEL-4, FR-SEL-5) cannot be tested yet. Add a section here when
 each one is built.

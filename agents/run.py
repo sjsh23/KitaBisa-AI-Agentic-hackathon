@@ -4,7 +4,7 @@
     python -m agents.run scan             scheduled scan, no notice
     python -m agents.run all              all three notices at once
     python -m agents.run S1 --json        full reports as JSON
-    python -m agents.run S1 --no-llm      skip the Gemini Flash texts
+    python -m agents.run S1 --no-llm      skip the model texts (Gen AI Hub)
     python -m agents.run S1 --detect-only Disruption Detection only
     python -m agents.run S1 --approve     also simulate the human approvals (buyer, manager)
 
@@ -265,7 +265,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("scenario", nargs="?", default="scan", help="S1, S2, S3, scan or all")
     parser.add_argument("--matnr", default=DEFAULT_MATNR)
     parser.add_argument("--json", action="store_true", help="print the full reports as JSON")
-    parser.add_argument("--no-llm", action="store_true", help="skip the Gemini Flash texts")
+    parser.add_argument("--no-llm", action="store_true", help="skip the model texts (Gen AI Hub)")
     parser.add_argument("--detect-only", action="store_true",
                         help="run Disruption Detection only")
     parser.add_argument("--approve", action="store_true",
@@ -306,10 +306,9 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def llm_notes() -> list[str]:
-    """Models that ran out of quota, or stayed overloaded after retries, during this run
-    (NFR-1, NFR-6)."""
-    return ([llm.quota_note(model, info) for model, info in llm.used_up_models().items()]
-            + [llm.overload_note(model, calls) for model, calls in llm.overloaded_models().items()])
+    """Models that were not deployed, stayed rate limited or stayed overloaded after
+    retries during this run (NFR-1, NFR-6)."""
+    return llm.run_notes()
 
 
 def quota_text(notes: list[str]) -> str:

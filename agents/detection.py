@@ -6,7 +6,7 @@ Two steps, in a fixed order (FR-SUP-3, deterministic path):
    `predict_delay_risk` (SAP-RPT-1.6, with the posterior fallback), then applies
    the flag rules and stock-out arithmetic from `scoring.disruption`. Every
    number in the report comes from this step.
-2. `reason`: Gemini Flash (Strands agent) writes a short assessment of the report.
+2. `reason`: GPT-5.4 on SAP Gen AI Hub (Strands agent) writes a short assessment of the report.
    It receives the numbers and may not compute or invent new ones. Supplier
    names are masked to their LIFNR before the text leaves the system (PRD
    section 10); buyer names are not sent.
@@ -53,6 +53,7 @@ Rules:
 - Do not recommend a replacement supplier; that is the next agent's job.
 - Always put a space between a word and a number ("against 0.23", "supplier 100108").
 - Spell every word correctly and keep a space after every punctuation mark.
+- Plain text only: no Markdown (no **bold**, headings or bullet marks).
 - Do not use em dashes or en dashes."""
 
 Reasoner = Callable[[dict[str, Any]], "str | tuple[str, str]"]
@@ -119,7 +120,7 @@ class DetectionAgent:
 
     # ------------------------------------------------------------ step 2
     def reason(self, report: dict[str, Any]) -> dict[str, Any]:
-        """Add the Gemini Flash assessment to a report. Never raises."""
+        """Add the model's assessment to a report. Never raises."""
         out = {**report, "REASONING": None, "REASONING_MODEL": llm.model_id(),
                "REASONING_ERROR": None, "REASONING_FIXES": []}
         try:
@@ -169,5 +170,5 @@ def facts_for_llm(report: dict[str, Any], adapter: CsvAdapter) -> dict[str, Any]
 
 
 def llm_reasoner(facts: dict[str, Any]) -> tuple[str, str]:
-    """Ask Gemini Flash for the assessment; returns the text and the model that wrote it."""
+    """Ask the Gen AI Hub model for the assessment; returns the text and the model that wrote it."""
     return llm.complete(SYSTEM_PROMPT, "Detection report (JSON):\n" + json.dumps(facts, indent=2))

@@ -69,7 +69,10 @@ rest of the run. A supplier is never ranked for more than its remaining AVAILABL
 
 ## 3. Proposed PRD change: fallback model when the quota is used up (section 17, NFR-2)
 
-**Status:** built on 15 Oct 2026 at the request of a team member; waiting for the team.
+**Status:** superseded on 20 Oct 2026. The team moved the reasoning model to GPT-5.4 on SAP
+Gen AI Hub with Claude Sonnet 4.6 on the same Gen AI Hub as fallback; `PRD.md` section 17
+and its Changelog now say so. The same fallback rules apply (not deployed, rate limited,
+overloaded after retries, out of output tokens twice). The text below is kept as history.
 
 **What section 17 says today:** the model is fixed at `gemini-3.5-flash`; change it only with
 a team decision, then freeze (NFR-2).
@@ -181,7 +184,6 @@ in S/4; GESIT does not change the old PO."
 Lines to add to the Changelog at the end of `PRD.md` once the team agrees:
 
 - 2026-10-15: FR-SEL-1: suppliers with a flagged PO in the same run are excluded by default (switch EXCLUDE_FLAGGED_SUPPLIERS, reason listed per supplier); suppliers with zero spare capacity are excluded. Open: keep 100103 in S2, since a price revision does not delay delivery.
-- 2026-10-15: Section 17 and NFR-2: `gemini-2.5-flash` is the fallback model when `gemini-3.5-flash` is out of quota, out of output tokens, or still overloaded (HTTP 5xx) after its retries (overload added 16 Oct); the output names the model that answered.
 - 2026-10-20: FR-SEL-1, FR-SEL-3, FR-ACT-1: keeping the flagged PO as it is is ranked as one more option with the same expected-cost formula; cheapest and fastest are marked among new orders only; nothing is drafted when keeping ranks #1. `score_suppliers` gets the optional input `current_po` (section 8).
 - 2026-10-20: FR-ACT-1: every case says what happens to the old PO (cancel, reduce to the on-time part, or keep); the buyer makes the change in S/4, GESIT does not.
 - 2026-10-15: FR-SEL-2: split orders made explicit ("cannot cover full quantity", kilograms add up to Q, never ranked above spare capacity); in a run with several flagged POs, the recommended order reserves spare capacity for later cases. The S1 versus `all` difference for 100109 (12,500 kg spare) was this reservation, now shown in the output.

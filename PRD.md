@@ -6,7 +6,7 @@ Agentic AI Hackathon 2026, Track A: Intelligent Supply Chain (Sokrates with AWS,
 | | |
 |---|---|
 | Status | Building toward Final/Demo Day, **Saturday 31 October 2026** (in person, 15 min incl. Q&A, **English**) |
-| Last updated | 9 October 2026 |
+| Last updated | 20 October 2026 |
 | Feature freeze | 25 October 2026 |
 | Source documents | Accepted proposal, finalist work plan (feedback), participant briefing deck |
 
@@ -91,7 +91,7 @@ AgentCore Memory (session state)   AgentCore Observability (traces)   Secrets Ma
 |---|---|---|
 | Dev | Kiro (AWS Docs + Strands MCP), Claude Code | Specs, code |
 | Orchestration | Strands Agents, supervisor | Plan and delegate |
-| Agent LLM | Gemini Flash (Google) through the Strands Gemini model provider; model id in `GESIT_LLM_MODEL` | Agent reasoning |
+| Agent LLM | GPT-5.4 on SAP Gen AI Hub (a `foundation-models` deployment on SAP AI Core) through the Strands OpenAI provider; fallback Claude Sonnet 4.6 (`anthropic--claude-4.6-sonnet`) on the same Gen AI Hub through the Strands Bedrock provider; model names in `GESIT_LLM_MODEL` and `GESIT_LLM_FALLBACK_MODEL` | Agent reasoning and the buyer explanation |
 | Hosting | AgentCore Runtime | Run the agents |
 | Tools | AgentCore Gateway + Lambda (MCP) | Data access and actions |
 | Guardrails | AgentCore Policy (Cedar) | Threshold and panel rules |
@@ -101,7 +101,7 @@ AgentCore Memory (session state)   AgentCore Observability (traces)   Secrets Ma
 | UI | SAP Joule (Joule Studio, needs an SAP BAIP sub-account) | Buyer and manager views, as conversations in Joule |
 | Region | us-west-2 only | Avoid forgotten resources |
 
-Why two LLM paths: Gemini Flash does the agents' reasoning (through Strands); Gen AI Hub writes the human-facing explanation that contains buyer and supplier names, so masking applies there. Agent reasoning text is masked in code before it reaches Gemini Flash: supplier names become their LIFNR and buyer names are not sent.
+One LLM provider: both the agents' reasoning (through Strands) and the human-facing explanation run on Gen AI Hub models, reached with the same SAP AI Core service key as SAP-RPT. Text is masked in code before it reaches the model: supplier names become their LIFNR and buyer names are not sent. The explanation is to move to the Gen AI Hub orchestration service for its masking and contract grounding modules (FR-SEL-4, FR-SEL-5).
 
 Optional, only if time allows: CAP OData mock via SAP Build Code.
 
@@ -219,7 +219,7 @@ All return JSON; amounts in IDR, quantities in KG, dates ISO.
 Each policy has a test that shows one allow and one deny.
 
 ## 10. Responsible AI
-- Masking of buyer and supplier names in the Gen AI Hub step, and in code before any agent prompt goes to Gemini Flash; names restored only in the UI.
+- Masking of buyer and supplier names in the Gen AI Hub step, and in code before any prompt goes to the reasoning model; names restored only in the UI.
 - No autonomous release above the threshold; human decision is always recorded.
 - Every decision traceable: plan, tool calls, scores, explanation, approver (Observability trace + decision log).
 - Overrides are allowed but justified; Integrity Guard flags patterns, it does not punish.
@@ -229,7 +229,7 @@ Each policy has a test that shows one allow and one deny.
 - **NFR-1** End-to-end decision for one scenario in under 60 seconds (target 20 s).
 - **NFR-2** Reproducible: fixed seeds, LLM temperature at or below 0.2, `reset_demo` command restores the database to the scenario start state.
 - **NFR-3** Cost per decision measured (tokens and RPT calls) and shown in the deck.
-- **NFR-4** No secrets in code or git. SAP AI Core credentials and the Gemini Flash API key in Secrets Manager or an AgentCore Identity credential provider; local dev uses `.env` (gitignored, template in `.env.example`).
+- **NFR-4** No secrets in code or git. SAP AI Core credentials (used by SAP-RPT and the Gen AI Hub models) in Secrets Manager or an AgentCore Identity credential provider; local dev uses `.env` (gitignored, template in `.env.example`).
 - **NFR-5** All UI text and generated explanations in English.
 - **NFR-6** Each demo scenario passes 10 consecutive runs before 26 October.
 
@@ -282,7 +282,7 @@ Mentoring questions: Smartsheet on Mondays 12, 19, 26 Oct before 16:00 WIB.
 
 | Risk | Mitigation |
 |---|---|
-| BAIP / AI Core extended plan not provisioned | RPT Playground public API for development; RPT behind an interface with Beta-posterior fallback (FR-DET-4). The Joule UI also depends on BAIP and has no agreed fallback yet (section 17) |
+| BAIP / AI Core extended plan not provisioned, or AI Core down | RPT Playground public API for development; RPT behind an interface with Beta-posterior fallback (FR-DET-4). The reasoning models also run on AI Core: if it is down, the tables, scores and draft POs still print and the model texts say "not available". The Joule UI also depends on BAIP and has no agreed fallback yet (section 17) |
 | S/4 sandbox down (401) | Already out of scope; adapter pattern |
 | Live demo failure (network, AWS) | Backup video, reset script, local fallback mode |
 | LLM non-determinism | Deterministic scoring, low temperature, numbers only from tools |
@@ -299,14 +299,16 @@ Mentoring questions: Smartsheet on Mondays 12, 19, 26 Oct before 16:00 WIB.
 - What does a decision cost? (measured, NFR-3)
 
 ## 17. Open decisions
-- Gemini access path in the deployed system: the Gemini API directly (the code reads `GEMINI_API_KEY`) or through a gateway. The model version is fixed at `gemini-3.5-flash` (`GESIT_LLM_MODEL`); change it only with a team decision, then freeze (NFR-2).
 - Approval threshold: Rp150 juta proposed (section 7.4), confirm with team.
 - Whether cooking oil is added as a second material (only after freeze criteria are met; data_gen supports it).
 - Dataset size: grow from 434 to about 800 to 1,000 PO lines so the RPT test set is less noisy. With one material this means either doubling daily usage (3,300 kg) or halving the routine PO size (3 to 8 t), which also moves the threshold note in section 7.4; the alternative is enabling cooking oil. Needs a team decision before the dataset is frozen.
 - Joule UI details (UI changed from Streamlit to Joule on 9 Oct 2026): how Joule calls the supervisor on AgentCore Runtime; how the ranked table, the reliability chart (FR-EVA-3) and the baseline results table (demo step 3e) are shown in Joule; and what the fallback UI is if the BAIP sub-account is not provisioned in time.
 
+Decided on 20 Oct 2026:
+- Agent reasoning model: GPT-5.4 on SAP Gen AI Hub (deployment `gpt-5.4`, version `2026-03-05` on 20 Oct), fixed in `GESIT_LLM_MODEL`; change it only with a team decision, then freeze (NFR-2). Fallback: Claude Sonnet 4.6 on the same Gen AI Hub (`anthropic--claude-4.6-sonnet`), used only when the main model is not deployed, is still rate limited (HTTP 429) or overloaded (HTTP 5xx) after its retries, or runs out of output tokens twice; the output names the model that answered every text. Replaces Gemini Flash: its free tier (20 requests per day per model) ran out during tests and its HTTP 503 overloads made texts fail at random. Both models are reached with the SAP AI Core service key SAP-RPT already uses, and accept temperature 0.2. The access path question for Gemini is closed. Delay prediction stays on SAP-RPT-1.6.
+
 Decided on 9 Oct 2026:
-- Agent reasoning model: Gemini Flash, fixed at `gemini-3.5-flash` (the alias `gemini-flash-latest` returned HTTP 503 on two of four test runs). It replaces gpt-5.4, chosen earlier the same day and dropped because the OpenAI models kept hitting rate limits; before that the plan was a Claude model on Amazon Bedrock. Delay prediction stays on SAP-RPT-1.6.
+- Agent reasoning model (replaced on 20 Oct, see above): Gemini Flash, fixed at `gemini-3.5-flash` (the alias `gemini-flash-latest` returned HTTP 503 on two of four test runs). It replaces gpt-5.4, chosen earlier the same day and dropped because the OpenAI models kept hitting rate limits; before that the plan was a Claude model on Amazon Bedrock. Delay prediction stays on SAP-RPT-1.6.
 - UI: SAP Joule (replaces Streamlit).
 
 Decided on 8 Oct 2026 (team to object by 9 Oct, otherwise these stand):
@@ -326,3 +328,4 @@ Decided on 8 Oct 2026 (team to object by 9 Oct, otherwise these stand):
 - 2026-10-09: Agent reasoning model set to gpt-5.4 through the Strands OpenAI provider (was a Claude model on Bedrock); delay prediction stays on SAP-RPT-1.6. Sections 5, 10, 11 (NFR-4 wording) and 17 updated. First agent built: Disruption Detection (FR-DET-1 to FR-DET-4). No FR or POL changed.
 - 2026-10-09: Agent reasoning model changed from gpt-5.4 to Gemini Flash through the Strands Gemini provider (OpenAI rate limits). Sections 5, 10, 11 (NFR-4 wording) and 17 updated; `OPENAI_API_KEY` replaced by `GEMINI_API_KEY`. No FR or POL changed.
 - 2026-10-11: S3 in `scenarios.json` now states the remainder explicitly (`remainder_kg`, `original_eindt`, `remainder_delay_days`, `remainder_eindt`; `S3_REMAINDER_DELAY_DAYS = 10` in `data_gen/config.py`, an assumption under D-4). Disruption Detection computes the S3 gap for the remainder (+5 days for 7,200 kg, simulated; FR-DET-3). No CSV changed. No requirement changed.
+- 2026-10-20: Agent reasoning model changed from Gemini Flash to GPT-5.4 on SAP Gen AI Hub (Strands OpenAI provider on the AI Core deployment), with Claude Sonnet 4.6 on the same Gen AI Hub as fallback (Strands Bedrock provider on the deployment's Converse endpoint). Sections 5, 10, 11 (NFR-4 wording), 15 and 17 updated; the Gemini access path decision closed; `GEMINI_API_KEY` no longer used. Reason: Gemini free-tier quota and overloads. No FR or POL changed.

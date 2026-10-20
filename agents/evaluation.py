@@ -5,7 +5,7 @@ Runs after Disruption Detection, in a fixed order (FR-SUP-3, deterministic path)
 1. `evaluate`: for every flagged PO, calls the tool `score_suppliers`, which ranks
    the approved-panel suppliers with a valid quote by expected cost (price plus
    the cost of stock-out risk). Every number in the report comes from this step.
-2. `explain`: Gemini Flash (Strands agent) writes, in under 120 words, why #1
+2. `explain`: GPT-5.4 on SAP Gen AI Hub (Strands agent) writes, in under 120 words, why #1
    beats the cheapest and the fastest option, using only the numbers it receives
    (FR-SEL-4). The facts are sent as ready-made phrases (a space around every
    number, no negative amounts, near ties marked, and a WHY phrase naming the
@@ -17,8 +17,9 @@ Runs after Disruption Detection, in a fixed order (FR-SUP-3, deterministic path)
 
 The model sees LIFNR numbers only, never supplier or buyer names (PRD section 10).
 FR-SEL-4 and FR-SEL-5 name SAP Gen AI Hub (masking, contract grounding) for this
-text; until it is connected (milestone 12-18 Oct) the explanation comes from
-Gemini Flash with masking done in code, and it never cites contract terms.
+text. The model is served by Gen AI Hub (a foundation-models deployment on SAP AI
+Core), but the orchestration service with its masking and grounding modules is not
+used yet: masking is done in code, and the text never cites contract terms.
 """
 from __future__ import annotations
 
@@ -44,7 +45,8 @@ EXCLUDE_FLAGGED_SUPPLIERS = True
 
 MASKING_NOTE = ("on, in code: supplier names replaced by LIFNR, buyer names never sent, "
                 "checked before every call")
-GEN_AI_HUB_NOTE = "not connected yet, so no Gen AI Hub masking setting applies (FR-SEL-4 target)"
+GEN_AI_HUB_NOTE = ("serves the model; orchestration masking and contract grounding not used yet "
+                   "(FR-SEL-4, FR-SEL-5 target)")
 
 SYSTEM_PROMPT = f"""You are the Supplier Evaluation agent of GESIT, a procurement assistant \
 for a food and beverage manufacturer. A purchase order is at risk and backup suppliers have \
@@ -74,6 +76,7 @@ estimate any number.
 - Never write a negative amount or a minus sign; use the words given (saving, extra, lower).
 - Never write JSON field names.
 - Spell every word correctly and keep a space after every punctuation mark.
+- Plain text only: no Markdown (no **bold**, headings or bullet marks).
 - Do not mention contract terms.
 - Do not use em dashes or en dashes. Keep it under {MAX_EXPLANATION_WORDS} words."""
 
@@ -366,5 +369,5 @@ def required_mentions(facts: dict[str, Any]) -> list[tuple[str, str]]:
 
 
 def llm_explainer(facts: dict[str, Any]) -> tuple[str, str]:
-    """Ask Gemini Flash for the explanation; returns the text and the model that wrote it."""
+    """Ask the Gen AI Hub model for the explanation; returns the text and the model that wrote it."""
     return llm.complete(SYSTEM_PROMPT, "Replacement order facts (JSON):\n" + json.dumps(facts, indent=2))

@@ -203,13 +203,13 @@ def test_run_adds_explanation_and_check(adapter):
         return (f" Order from {best['SUPPLIER']}, {best['EXPECTED_COST']}. The cheapest has "
                 f"{versus['EXPECTED_COST']}, {versus['WHY']}. Keeping the current order "
                 f"costs more. It rests on only {best['PAST_DELIVERIES']}. All figures are "
-                "simulated. ", "gemini-x")
+                "simulated. ", "model-x")
 
     agent = EvaluationAgent(adapter=adapter, rpt_client=StubRpt({}), explainer=explainer)
     report = agent.run(detection(adapter, "S1"))
     case = report["CASES"][0]
     assert case["EXPLANATION"].startswith("Order from supplier 100109")
-    assert case["EXPLANATION_MODEL"] == "gemini-x" and case["EXPLANATION_ERROR"] is None
+    assert case["EXPLANATION_MODEL"] == "model-x" and case["EXPLANATION_ERROR"] is None
     assert case["EXPLANATION_CHECK"]["PASSED"] is True, case["EXPLANATION_CHECK"]
     assert seen["REPLACES"].startswith("order 4500000431")
     settings = report["EXPLANATION_SETTINGS"]
@@ -244,12 +244,12 @@ def test_invented_number_is_flagged(adapter):
 
 def test_run_survives_missing_llm(adapter):
     def explainer(facts):
-        raise llm.LlmUnavailable("GEMINI_API_KEY is not set")
+        raise llm.LlmUnavailable("SAP AI Core credentials (AICORE_*) are not set")
 
     agent = EvaluationAgent(adapter=adapter, rpt_client=StubRpt({}), explainer=explainer)
     report = agent.run(detection(adapter, "S1"))
     case = report["CASES"][0]
-    assert case["EXPLANATION"] is None and "GEMINI_API_KEY" in case["EXPLANATION_ERROR"]
+    assert case["EXPLANATION"] is None and "AICORE_*" in case["EXPLANATION_ERROR"]
     assert case["SCORING"]["CANDIDATES"]                  # the table survives
     assert "not available" in format_evaluation(report)
 
