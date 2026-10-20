@@ -67,7 +67,7 @@ git diff --cached --name-only
 py -3.11 -m pytest -q
 ```
 
-Expected: `161 passed`. The tests never call the network: SAP-RPT, SAP AI Core and the reasoning models are replaced by fakes.
+Expected: `164 passed`. The tests never call the network: SAP-RPT, SAP AI Core and the reasoning models are replaced by fakes.
 
 | Test file | What it proves | Requirements |
 |---|---|---|
@@ -222,16 +222,26 @@ Pass when:
 - there are five predictions, one per EBELN 4500000430 to 4500000434,
 - every `P_LATE` is between 0 and 1.
 
+The token request and the SAP-RPT call are each tried up to three times (waits of 2 and
+5 s) when the connection fails or AI Core answers HTTP 429 or 5xx, so one network drop
+does not switch the run to the fallback. A read timeout (30 s) is not retried, to stay
+inside NFR-1. Retries are listed in `"retries"`, and in the agent output after the model
+name, for example `Delay risk model: sap-rpt-1.6; 1 network retry (SAP AI Core token
+request: ConnectionError, tried again)`. A retry that then worked is not a failure; many
+retries across the ten runs point to an unstable network before the demo.
+
 If `"fallback": true`, read `fallback_reason`:
 
 | `fallback_reason` | Likely cause |
 |---|---|
 | `SAP-RPT credentials are not configured` | `.env` is missing, or one of the six AI Core variables is empty |
-| `SAP AI Core token request failed: ...` | `AICORE_AUTH_URL` is malformed (for example a stray character before `https://`) or there is no network |
+| `SAP AI Core token request failed: ConnectionError after 3 tries` | No network for about 10 s, or `AICORE_AUTH_URL` is malformed (for example a stray character before `https://`) |
+| `SAP AI Core token request failed: ReadTimeout` | The login service did not answer within 30 s; rerun |
 | `SAP AI Core token request returned HTTP 401` | Wrong client id or secret |
-| `SAP-RPT returned HTTP 404` | Wrong `SAP_RPT_DEPLOYMENT_ID` or `AICORE_BASE_URL`, or the deployment is stopped |
-| `SAP-RPT returned HTTP 403` | Wrong `AICORE_RESOURCE_GROUP` |
-| `SAP-RPT returned HTTP 400` or `422` | The request body does not match the deployment; send the response to the team |
+| `SAP-RPT request returned HTTP 404` | Wrong `SAP_RPT_DEPLOYMENT_ID` or `AICORE_BASE_URL`, or the deployment is stopped |
+| `SAP-RPT request returned HTTP 403` | Wrong `AICORE_RESOURCE_GROUP` |
+| `SAP-RPT request returned HTTP 400` or `422` | The request body does not match the deployment; send the response to the team |
+| `SAP-RPT request returned HTTP 503 after 3 tries` | SAP-RPT stayed overloaded for about 7 s; rerun in a minute |
 | `SAP-RPT response has no usable class confidence` | The response shape differs from the documented one; `parse_predictions` in `integrations/sap/rpt_client.py` needs adjusting |
 
 Things to record on the first successful call, because they are still assumptions:

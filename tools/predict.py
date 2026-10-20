@@ -24,8 +24,10 @@ def predict_delay_risk(rows: list[dict[str, Any]], adapter: CsvAdapter | None = 
     client = client or RptClient()
     if not rows:
         return {"predictions": [], "model_id": client.model_id, "fallback": False,
-                "fallback_reason": None}
+                "fallback_reason": None, "retries": []}
 
+    retries = getattr(client, "retries", [])   # stand-in clients may not keep a list
+    retries_before = len(retries)
     try:
         p_late = client.predict_late(adapter.rpt_rows(CONTEXT_SPLITS), rows)
         model_id, fallback, reason = client.model_id, False, None
@@ -42,6 +44,7 @@ def predict_delay_risk(rows: list[dict[str, Any]], adapter: CsvAdapter | None = 
         "model_id": model_id,
         "fallback": fallback,
         "fallback_reason": reason,
+        "retries": retries[retries_before:],   # network retries in this call (NFR-6)
     }
 
 

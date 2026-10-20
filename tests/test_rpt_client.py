@@ -88,10 +88,74 @@ def test_aicore_call_uses_token_resource_group_and_deployment_url():
 
 
 def test_http_error_and_missing_credentials_raise_unavailable():
-    with pytest.raises(RptUnavailable, match="HTTP 503"):
-        RptClient(AICORE, session=FakeSession(FakeResponse(503))).predict_late(CONTEXT, QUERY)
+    waits = []
+    with pytest.raises(RptUnavailable, match="HTTP 503 after 3 tries"):
+        RptClient(AICORE, session=FakeSession(FakeResponse(503)),
+                  sleep=waits.append).predict_late(CONTEXT, QUERY)
+    assert waits == [2.0, 5.0]
+    with pytest.raises(RptUnavailable, match="HTTP 400$"):     # a bad request is not retried
+        RptClient(AICORE, session=FakeSession(FakeResponse(400)),
+                  sleep=waits.append).predict_late(CONTEXT, QUERY)
+    assert waits == [2.0, 5.0]
     with pytest.raises(RptUnavailable, match="not configured"):
         RptClient(config=None, session=FakeSession(FakeResponse())).predict_late(CONTEXT, QUERY)
+
+
+class FlakySession(FakeSession):
+    """Raises the queued errors (or returns the queued responses) first, then answers."""
+
+    def __init__(self, predict_response, failures):
+        super().__init__(predict_response)
+        self.failures = list(failures)
+
+    def post(self, url, **kwargs):
+        if self.failures:
+            self.calls.append((url, kwargs))
+            failure = self.failures.pop(0)
+            if isinstance(failure, Exception):
+                raise failure
+            return failure
+        return super().post(url, **kwargs)
+
+
+def test_lost_connection_on_the_token_request_is_retried():
+    import requests
+    waits = []
+    session = FlakySession(FakeResponse(body=rpt_body("LATE", 0.7)),
+                           [requests.ConnectionError("reset"), FakeResponse(502)])
+    client = RptClient(AICORE, session=session, sleep=waits.append)
+    assert client.predict_late(CONTEXT, QUERY) == {"9": pytest.approx(0.7)}
+    assert waits == [2.0, 5.0]
+    assert client.retries == ["SAP AI Core token request: ConnectionError, tried again",
+                              "SAP AI Core token request: HTTP 502, tried again"]
+
+
+def test_connection_lost_three_times_or_read_timeout_gives_up():
+    import requests
+    waits = []
+    session = FlakySession(FakeResponse(), [requests.ConnectionError("down")] * 3)
+    with pytest.raises(RptUnavailable, match="token request failed: ConnectionError after 3 tries"):
+        RptClient(AICORE, session=session, sleep=waits.append).predict_late(CONTEXT, QUERY)
+    assert waits == [2.0, 5.0]
+
+    waits.clear()     # a read timeout reached SAP-RPT: no second 30 s wait (NFR-1)
+    session = FlakySession(FakeResponse(), [requests.ReadTimeout("slow")])
+    with pytest.raises(RptUnavailable, match="token request failed: ReadTimeout$"):
+        RptClient(AICORE, session=session, sleep=waits.append).predict_late(CONTEXT, QUERY)
+    assert waits == []
+
+
+def test_tool_reports_the_retries_of_its_own_call():
+    import requests
+    adapter = CsvAdapter()
+    rows = adapter.rpt_rows(("predict",))[:1]
+    session = FlakySession(FakeResponse(body=rpt_body("LATE", 0.9, ebeln=rows[0]["EBELN"])),
+                           [requests.ConnectionError("reset")])
+    client = RptClient(AICORE, session=session, sleep=lambda seconds: None)
+    result = predict_delay_risk(rows, adapter=adapter, client=client)
+    assert result["fallback"] is False
+    assert result["retries"] == ["SAP AI Core token request: ConnectionError, tried again"]
+    assert predict_delay_risk(rows, adapter=adapter, client=client)["retries"] == []
 
 
 def test_tool_uses_rpt_when_available():

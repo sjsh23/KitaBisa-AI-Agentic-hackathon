@@ -42,7 +42,7 @@ def test_scheduled_scan_flags_only_predicted_late(adapter):
     report = make_agent(adapter, {"4500000434": 0.62}).detect(MATNR)
     assert report["TRIGGER"] == "scheduled_scan"
     assert report["PREDICTION"] == {"MODEL_ID": "sap-rpt-1.6", "FALLBACK": False,
-                                    "FALLBACK_REASON": None}
+                                    "FALLBACK_REASON": None, "RETRIES": []}
     assert report["FLAGGED_EBELN"] == ["4500000434"]
     assert len(report["OPEN_POS"]) == 5 and all(po["P_LATE"] is not None for po in report["OPEN_POS"])
     assert [s["TOOL"] for s in report["STEPS"]] == ["get_open_pos", "get_inventory",

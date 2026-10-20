@@ -81,8 +81,7 @@ def format_report(report: dict[str, Any]) -> str:
         f"Material {report['MATNR']}, today {report['TODAY']}, trigger {report['TRIGGER']}",
         f"Stock {inv['LABST']:,.0f} kg, {inv['DAYS_OF_COVER']} days of cover, "
         f"stock-out date {inv['STOCKOUT_DATE']}",
-        f"Delay risk model: {pred['MODEL_ID']}"
-        + (f" (FALLBACK, {pred['FALLBACK_REASON']})" if pred["FALLBACK"] else ""),
+        delay_model_text(pred),
         "",
         "Steps:",
     ]
@@ -147,8 +146,7 @@ def format_case(case: dict[str, Any]) -> list[str]:
     lines = [
         f"Replacement for PO {case['EBELN']} (supplier {case['LIFNR']}, {reasons}): "
         f"{case['QTY']:,.0f} kg, needed by {case['NEED_BY']} (stock-out date)",
-        f"Delay risk model: {pred['MODEL_ID']}"
-        + (f" (FALLBACK, {pred['FALLBACK_REASON']})" if pred["FALLBACK"] else ""),
+        delay_model_text(pred),
     ]
     if table["RESERVED_KG"]:
         lines.append("Spare capacity already given to an earlier case in this run: "
@@ -304,6 +302,17 @@ def main(argv: list[str] | None = None) -> None:
         print(format_report(report) + "\n\n" + format_evaluation(evaluation)
               + "\n\n" + format_action(actions) + quota_text(llm_notes()))
 
+
+def delay_model_text(pred: dict[str, Any]) -> str:
+    """'Delay risk model: sap-rpt-1.6', with the fallback reason and any network retries."""
+    text = f"Delay risk model: {pred['MODEL_ID']}"
+    if pred["FALLBACK"]:
+        text += f" (FALLBACK, {pred['FALLBACK_REASON']})"
+    retries = pred.get("RETRIES") or []
+    if retries:
+        text += (f"; {len(retries)} network retr{'y' if len(retries) == 1 else 'ies'} "
+                 f"({'; '.join(retries)})")
+    return text
 
 def llm_notes() -> list[str]:
     """Models that were not deployed, stayed rate limited or stayed overloaded after
