@@ -71,15 +71,20 @@ def test_s1_candidates_exclusions_and_ranking(adapter):
         "100101": "DISRUPTED_SUPPLIER", "100104": "NO_SPARE_CAPACITY",
         "100110": "NO_SPARE_CAPACITY", "100111": "OFF_PANEL"}
     rows = table["CANDIDATES"]
-    assert {r["LIFNR"] for r in rows} == {"100102", "100103", "100105", "100106", "100107",
-                                          "100108", "100109"}
+    new = [r for r in rows if r["OPTION"] == "NEW_PO"]
+    assert {r["LIFNR"] for r in new} == {"100102", "100103", "100105", "100106", "100107",
+                                         "100108", "100109"}
+    # Keeping the delayed PO is ranked too: it arrives 5 days after stock runs out, so last.
+    assert rows[-1]["OPTION"] == "KEEP_CURRENT_PO" and rows[-1]["LIFNR"] == "100101"
+    assert table["KEEP"] == rows[-1] and table["RECOMMENDED_OPTION"] == "NEW_PO"
     # FR-SEL-2 and FR-SEL-3: sorted by expected cost, every component present.
     assert [r["EXPECTED_COST"] for r in rows] == sorted(r["EXPECTED_COST"] for r in rows)
     assert all(r["EXPECTED_COST"] == r["PURCHASE_COST"] + r["RISK_COST"] for r in rows)
     assert table["RECOMMENDED"] == rows[0]["LIFNR"] and rows[0]["SCORE"] == 100.0
-    assert table["CHEAPEST"] == min(rows, key=lambda r: r["NETPR"])["LIFNR"]
-    assert min(r["LEAD_DAYS"] for r in rows) == next(
-        r["LEAD_DAYS"] for r in rows if r["LIFNR"] == table["FASTEST"])
+    # Cheapest and fastest are the baselines among new orders (the kept PO never counts).
+    assert table["CHEAPEST"] == min(new, key=lambda r: r["NETPR"])["LIFNR"]
+    assert min(r["LEAD_DAYS"] for r in new) == next(
+        r["LEAD_DAYS"] for r in new if r["LIFNR"] == table["FASTEST"])
     assert table["PREDICTION"]["FALLBACK"] is False and table["PREDICTION"]["ROWS"] == 7
 
 
@@ -183,7 +188,8 @@ def test_explanation_without_reason_fails_the_check(adapter):
     check = grounding.check_explanation(base, facts, 120, must_mention=required_mentions(facts))
     assert check["PASSED"] is False
     assert any(m.startswith("reason vs cheapest") for m in check["MISSING_MENTIONS"])
-    with_reason = base.replace(f"{versus['EXPECTED_COST']}.", f"{versus['EXPECTED_COST']}, {versus['WHY']}.")
+    with_reason = base.replace(f"{versus['EXPECTED_COST']}.", f"{versus['EXPECTED_COST']}, "
+                               f"{versus['WHY']}. Keeping the current order costs more.")
     check = grounding.check_explanation(with_reason, facts, 120, must_mention=required_mentions(facts))
     assert check["PASSED"] is True, check
 
@@ -195,8 +201,9 @@ def test_run_adds_explanation_and_check(adapter):
         best = facts["RECOMMENDED"]
         versus = facts["CHEAPEST"]["VS_RECOMMENDED"]
         return (f" Order from {best['SUPPLIER']}, {best['EXPECTED_COST']}. The cheapest has "
-                f"{versus['EXPECTED_COST']}, {versus['WHY']}. It rests on only "
-                f"{best['PAST_DELIVERIES']}. All figures are simulated. ", "gemini-x")
+                f"{versus['EXPECTED_COST']}, {versus['WHY']}. Keeping the current order "
+                f"costs more. It rests on only {best['PAST_DELIVERIES']}. All figures are "
+                "simulated. ", "gemini-x")
 
     agent = EvaluationAgent(adapter=adapter, rpt_client=StubRpt({}), explainer=explainer)
     report = agent.run(detection(adapter, "S1"))
@@ -215,8 +222,8 @@ def test_explanation_is_tidied_before_the_check(adapter):
         versus = facts["CHEAPEST"]["VS_RECOMMENDED"]
         why = versus["WHY"].replace("against ", "againts")      # the typo seen in a real run
         return (f"Order from {best['SUPPLIER']}, {best['EXPECTED_COST']}.The cheapest has "
-                f"{versus['EXPECTED_COST']}, {why}. It rests on only "
-                f"{best['PAST_DELIVERIES']}. All figures are simulated.")
+                f"{versus['EXPECTED_COST']}, {why}. Keeping the current order costs more. "
+                f"It rests on only {best['PAST_DELIVERIES']}. All figures are simulated.")
 
     agent = EvaluationAgent(adapter=adapter, rpt_client=StubRpt({}), explainer=explainer)
     report = agent.run(detection(adapter, "S1"))
@@ -269,7 +276,8 @@ def test_short_track_record_is_flagged_for_the_model(adapter):
     assert facts["RECOMMENDED"]["PAST_DELIVERIES"] == "4 past deliveries"
     assert "only 4 past deliveries" in facts["TRACK_RECORD_WARNING"]
     labels = [label for label, _ in required_mentions(facts)]
-    assert labels[:2] == ["simulated", "4 past deliveries"]   # then the reason checks
+    assert labels[:3] == ["simulated", "keeping the current order",
+                          "4 past deliveries"]   # then the reason checks
 
 def test_s1_recommended_covers_the_full_quantity(adapter):
     # FR-SEL-2: 100109 has 12,500 kg spare, so in S1 it covers all 10,000 kg without a split.
@@ -288,6 +296,9 @@ def test_no_row_is_ranked_for_more_than_its_spare_capacity(adapter):
     assert s3["EBELN"] == "4500000433" and s3["SCORING"]["RESERVED_KG"] == {"100109": 10_000.0}
     for case in report["CASES"]:
         for row in case["SCORING"]["CANDIDATES"]:
+            if row["OPTION"] == "KEEP_CURRENT_PO":
+                assert row["AVAILABLE_KG"] is None and row["MENGE"] == case["QTY"]
+                continue   # already ordered, no spare capacity involved
             assert row["MENGE"] <= row["AVAILABLE_KG"]
             if row["COVERS_FULL_QTY"]:
                 assert row["MENGE"] == case["QTY"] and row["CAPACITY_NOTE"] is None
@@ -326,3 +337,42 @@ def test_near_tie_must_be_mentioned(adapter):
     facts = {"CHEAPEST": {"VS_RECOMMENDED": {"NEAR_TIE": True}},
              "RECOMMENDED": {"PAST_DELIVERIES": "40 past deliveries"}}
     assert [label for label, _ in required_mentions(facts)] == ["simulated", "near tie"]
+
+
+# ------------------------------------------------- keep the current PO (proposal item 4)
+def test_keep_row_uses_the_po_terms(adapter):
+    # S2: PO 4500000432 keeps arriving 3 days before stock runs out, at the revised price.
+    case = evaluate(adapter, "S2", {})["CASES"][0]
+    keep = case["SCORING"]["KEEP"]
+    assert (keep["LIFNR"], keep["KEEP_EBELN"], keep["NETPR"]) == ("100103", "4500000432", 18_700)
+    assert (keep["ARRIVAL"], keep["MENGE"]) == ("2026-10-03", 8_000.0)
+    assert keep["PURCHASE_COST"] == 149_600_000   # 8,000 kg x Rp18,700, simulated
+    assert keep["P_LATE"] == case["CURRENT_PO"]["P_LATE"]   # the PO's own prediction
+    assert not keep["IS_CHEAPEST"] and not keep["IS_FASTEST"]
+    assert case["CURRENT_PO"]["NETPR"] == 18_700 and case["CURRENT_PO"]["PO_NETPR"] == 17_650
+
+
+def test_keep_wins_in_all_when_the_best_backup_is_taken(adapter):
+    # In `all` 100109's capacity goes to S1 first, so for S2 keeping PO 4500000432
+    # (Rp149,600,000, simulated) beats every new order: no reservation, keep facts.
+    report = evaluate(adapter, "all", {})
+    s2 = next(c for c in report["CASES"] if c["EBELN"] == "4500000432")
+    table = s2["SCORING"]
+    assert table["RECOMMENDED_OPTION"] == "KEEP_CURRENT_PO" and table["RECOMMENDED"] == "100103"
+    assert table["CANDIDATES"][0]["EXPECTED_COST"] == 149_600_000
+    assert "#1 keep PO 4500000432" in report["STEPS"][2]["RESULT"]
+    facts = facts_for_llm(s2, report)
+    assert facts["RECOMMENDED_IS_KEEP"] is True and "KEEP_CURRENT_ORDER" not in facts
+    assert facts["RECOMMENDED"]["SUPPLIER"].startswith("keep order 4500000432")
+    assert "for the current order 4500000432" in facts["CHEAPEST"]["VS_RECOMMENDED"]["WHY"]
+    assert "keeping the current order" in [label for label, _ in required_mentions(facts)]
+    assert "Recommended: keep PO 4500000432 (100103), no new order" in format_evaluation(report)
+
+
+def test_keep_comparison_is_given_when_a_new_order_wins(adapter):
+    report = evaluate(adapter, "S1", {})
+    facts = facts_for_llm(report["CASES"][0], report)
+    versus = facts["KEEP_CURRENT_ORDER"]["VS_RECOMMENDED"]
+    assert facts["RECOMMENDED_IS_KEEP"] is False
+    assert versus["WHY"].startswith("mainly from extra risk cost Rp ")   # 5 days after stock-out
+    assert facts["CANDIDATES"] == "7 suppliers ranked, plus keeping the current order"

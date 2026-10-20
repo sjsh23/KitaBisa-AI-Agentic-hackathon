@@ -193,3 +193,27 @@ def test_main_driver_names_the_cost_that_makes_a_row_lose():
     assert ss.main_driver(0, 0) is None
     best = {"PURCHASE_COST": 1, "RISK_COST": 1, "EXPECTED_COST": 2}
     assert ss.compare_to_best(best, best)["MAIN_DRIVER"] is None
+
+
+def test_keep_row_is_ranked_but_never_cheapest_or_fastest():
+    # Keeping a PO that arrives 3 days early at a higher price (proposal item 4).
+    current = {"EBELN": "4500000432", "LIFNR": "K", "NETPR": 16_000, "ARRIVAL": "2026-10-01",
+               "P_LATE": 0.2}
+    keep = ss.keep_row(current, 8_000, d_late=2.0, today=TODAY, stockout=STOCKOUT,
+                       downtime_cost_per_day=DOWNTIME)
+    assert (keep["OPTION"], keep["KEEP_EBELN"], keep["LEAD_DAYS"]) == (ss.OPTION_KEEP,
+                                                                       "4500000432", 1)
+    assert keep["EXPECTED_STOCKOUT_DAYS"] == 0.0 and keep["PURCHASE_COST"] == 128_000_000
+    rows = ss.score_candidates({"B": quote("B", 17_550, 3)}, 8_000, {"B": 0.2}, {"B": 2.0},
+                               TODAY, STOCKOUT, DOWNTIME, keep=keep)
+    assert [(r["RANK"], r["OPTION"]) for r in rows] == [(1, ss.OPTION_KEEP), (2, ss.OPTION_NEW_PO)]
+    assert not rows[0]["IS_CHEAPEST"] and not rows[0]["IS_FASTEST"]   # baselines: new orders
+    assert rows[1]["IS_CHEAPEST"] and rows[1]["IS_FASTEST"]
+
+
+def test_keep_goes_first_on_equal_expected_cost():
+    keep = ss.keep_row({"EBELN": "1", "LIFNR": "Z", "NETPR": 17_550, "ARRIVAL": "2026-10-03",
+                        "P_LATE": 0.0}, 1_000, 0.0, TODAY, STOCKOUT, DOWNTIME)
+    rows = ss.score_candidates({"A": quote("A", 17_550, 3)}, 1_000, {"A": 0.0}, {"A": 0.0},
+                               TODAY, STOCKOUT, DOWNTIME, keep=keep)
+    assert rows[0]["OPTION"] == ss.OPTION_KEEP and rows[0]["EXPECTED_COST"] == rows[1]["EXPECTED_COST"]

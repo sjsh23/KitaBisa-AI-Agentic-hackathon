@@ -20,6 +20,12 @@ either part is missing, so the split's expected stock-out days are the larger of
 the two parts' (a conservative choice). A supplier with no spare capacity is not
 a candidate at all.
 
+Keeping the current PO is ranked in the same table (OPTION KEEP_CURRENT_PO, not
+yet in FR-SEL-1, proposed in docs/prd_change_proposals.md): the same formula with
+the PO's own price (the revised one after a price increase), its expected arrival
+and its P(late). If it ranks #1, GESIT recommends no new order. The cheapest and
+fastest marks are given among the new orders only (the FR-SEL-4 baselines).
+
 Comparisons between #1 and another row are computed here too, so the LLM only
 quotes them: differences are always positive amounts with a direction word, a
 gap in expected cost under 1 percent is a near tie, and the main driver says
@@ -35,6 +41,9 @@ EXCLUDED_OFF_PANEL = "OFF_PANEL"                 # LFA1.ZZPANEL blank (see POL-2
 EXCLUDED_QUOTE_NOT_VALID = "QUOTE_NOT_VALID"     # today outside QUOTE_DATE..VALID_TO
 EXCLUDED_NO_SPARE_CAPACITY = "NO_SPARE_CAPACITY" # AVAILABLE_KG_NEXT_30D is 0
 EXCLUDED_DISRUPTED = "DISRUPTED_SUPPLIER"        # has a flagged PO in this detection run
+
+OPTION_NEW_PO = "NEW_PO"              # buy the quantity from a backup supplier
+OPTION_KEEP = "KEEP_CURRENT_PO"       # keep the flagged PO as it is, no new order
 
 CANNOT_COVER_NOTE = "cannot cover full quantity"
 NEAR_TIE_PCT = 1.0   # expected cost gap to #1 below this many percent is a near tie
@@ -161,12 +170,40 @@ def best_partner(remainder: float, short_lifnr: str, quotes: dict[str, dict[str,
         p["PURCHASE_COST"] + p["STOCKOUT_DAYS"] * downtime_cost_per_day, p["NETPR"], p["LIFNR"]))
 
 
+def keep_row(current: dict[str, Any], qty: float, d_late: float, today: str, stockout: str,
+             downtime_cost_per_day: int) -> dict[str, Any]:
+    """Keeping the flagged PO as it is, costed with the same formula as a new order.
+
+    `current` has EBELN, LIFNR, NETPR (revised after a price increase), ARRIVAL (the
+    expected arrival from detection: a delay notice's new date, or the remainder's date)
+    and P_LATE (its own prediction).
+    """
+    arrival = current["ARRIVAL"]
+    part = {
+        "LIFNR": current["LIFNR"],
+        "MENGE": float(qty),
+        "NETPR": int(current["NETPR"]),
+        "LEAD_DAYS": max(0, days_between(arrival, today)),
+        "AVAILABLE_KG": None,                  # already ordered, no spare capacity involved
+        "ARRIVAL": arrival,
+        "SLACK_DAYS": days_between(stockout, arrival),
+        "P_LATE": current["P_LATE"],
+        "D_LATE": d_late,
+        "PURCHASE_COST": int(round(qty * current["NETPR"])),
+        "STOCKOUT_DAYS": expected_stockout_days(arrival, stockout, current["P_LATE"], d_late),
+    }
+    return {**finish_row([part], downtime_cost_per_day), "OPTION": OPTION_KEEP,
+            "KEEP_EBELN": current["EBELN"]}
+
+
 def score_candidates(quotes: dict[str, dict[str, Any]], qty: float, p_late: dict[str, float],
                      d_late: dict[str, float], today: str, stockout: str,
-                     downtime_cost_per_day: int) -> list[dict[str, Any]]:
+                     downtime_cost_per_day: int,
+                     keep: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """FR-SEL-2 and FR-SEL-3: ranked rows, best first, with score, cheapest and fastest marked.
 
     `quotes` are the candidates only (already filtered by `exclusion_reason`), keyed by LIFNR.
+    `keep` is the row from `keep_row`, ranked alongside the new orders when given.
     """
     rows = []
     for lifnr, quote in quotes.items():
@@ -183,23 +220,33 @@ def score_candidates(quotes: dict[str, dict[str, Any]], qty: float, p_late: dict
             parts = [score_part(quote, available, p_late[lifnr], d_late[lifnr], today, stockout),
                      partner]
         rows.append(finish_row(parts, downtime_cost_per_day))
+    if keep is not None:
+        rows.append(keep)
     return rank(rows)
 
 
 def rank(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Sort by expected cost, then add RANK, SCORE, IS_CHEAPEST and IS_FASTEST."""
-    rows = sorted(rows, key=lambda r: (r["EXPECTED_COST"], r["NETPR"], r["LIFNR"]))
+    """Sort by expected cost, then add RANK, SCORE, IS_CHEAPEST and IS_FASTEST.
+
+    On equal expected cost keeping the current PO goes first (no new order needed).
+    Cheapest and fastest are marked among the new orders only.
+    """
+    rows = sorted(({"OPTION": OPTION_NEW_PO, **r} for r in rows),
+                  key=lambda r: (r["EXPECTED_COST"], r["OPTION"] != OPTION_KEEP, r["NETPR"],
+                                 r["LIFNR"]))
     if not rows:
         return rows
     lowest = rows[0]["EXPECTED_COST"]
-    cheapest = min(rows, key=lambda r: r["NETPR"])["LIFNR"]       # ties go to the better rank
-    fastest = min(rows, key=lambda r: r["LEAD_DAYS"])["LIFNR"]
+    new = [i for i, r in enumerate(rows) if r["OPTION"] == OPTION_NEW_PO]
+    # min() keeps the first of equal values, so ties go to the better rank.
+    cheapest = min(new, key=lambda i: rows[i]["NETPR"], default=None)
+    fastest = min(new, key=lambda i: rows[i]["LEAD_DAYS"], default=None)
     return [
-        {"RANK": i, **row,
+        {"RANK": i + 1, **row,
          "SCORE": round(100.0 * lowest / row["EXPECTED_COST"], 1),
-         "IS_CHEAPEST": row["LIFNR"] == cheapest,
-         "IS_FASTEST": row["LIFNR"] == fastest}
-        for i, row in enumerate(rows, 1)
+         "IS_CHEAPEST": i == cheapest,
+         "IS_FASTEST": i == fastest}
+        for i, row in enumerate(rows)
     ]
 
 

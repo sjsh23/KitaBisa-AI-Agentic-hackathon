@@ -11,6 +11,7 @@ from typing import Any, Iterable, Mapping
 from adapters import CsvAdapter, default_adapter
 from integrations.sap.rpt_client import RptClient
 from scoring import rpt_features, supplier_score
+from scoring.reliability import posterior
 from tools.predict import predict_delay_risk
 from tools.read_tools import get_inventory, get_market_price, get_quotes
 
@@ -20,12 +21,16 @@ CANDIDATE_ROW_PREFIX = "CAND-"   # EBELN of a hypothetical PO row, never a real 
 def score_suppliers(matnr: str, qty: float, need_by: str, exclude_lifnr: Iterable[str] = (),
                     today: str | None = None, reserved_kg: Mapping[str, float] | None = None,
                     adapter: CsvAdapter | None = None,
-                    client: RptClient | None = None) -> dict[str, Any]:
+                    client: RptClient | None = None,
+                    current_po: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Ranked table for buying `qty` kg of `matnr` that must arrive by `need_by` (stock-out date).
 
     `exclude_lifnr` are suppliers with a flagged PO right now; they are not used as backups.
     `reserved_kg` is spare capacity already promised to an earlier replacement in the same
     run; it is taken off AVAILABLE_KG_NEXT_30D.
+    `current_po` (EBELN, LIFNR, NETPR, ARRIVAL, P_LATE) adds "keep the current PO" as a
+    ranked option (proposed, docs/prd_change_proposals.md item 4). P_LATE None falls
+    back to the supplier's reliability posterior (FR-DET-4).
     """
     adapter = adapter or default_adapter()
     inventory = get_inventory(matnr, adapter=adapter)
@@ -63,10 +68,19 @@ def score_suppliers(matnr: str, qty: float, need_by: str, exclude_lifnr: Iterabl
     ]
     prediction = predict_delay_risk(rows, adapter=adapter, client=client)
     p_late = {p["LIFNR"]: p["P_LATE"] for p in prediction["predictions"]}
-    d_late = delay_when_late(receipts, adapter)
+    keep = None
+    if current_po is not None:
+        lifnr = str(current_po["LIFNR"])
+        receipts.setdefault(lifnr, adapter.receipts(lifnr))
+        own = current_po.get("P_LATE")
+        current = {**current_po, "P_LATE": own if own is not None
+                   else posterior(r["LATE"] for r in receipts[lifnr]).p_late}
+        keep_d_late = delay_when_late({lifnr: receipts[lifnr]}, adapter)[lifnr]
+        keep = supplier_score.keep_row(current, qty, keep_d_late, today, need_by, downtime)
+    d_late = delay_when_late({k: receipts[k] for k in candidates}, adapter)
 
     ranked = supplier_score.score_candidates(candidates, qty, p_late, d_late, today, need_by,
-                                             downtime)                     # FR-SEL-2, FR-SEL-3
+                                             downtime, keep=keep)          # FR-SEL-2, FR-SEL-3
     for row in ranked:   # track record behind P_LATE and D_LATE, so a thin one is visible
         row["N_RECEIPTS"] = len(receipts[row["LIFNR"]])
     return {
@@ -82,6 +96,8 @@ def score_suppliers(matnr: str, qty: float, need_by: str, exclude_lifnr: Iterabl
         "CANDIDATES": ranked,
         "EXCLUDED": sorted(excluded, key=lambda e: e["LIFNR"]),
         "RECOMMENDED": ranked[0]["LIFNR"] if ranked else None,
+        "RECOMMENDED_OPTION": ranked[0]["OPTION"] if ranked else None,
+        "KEEP": next((r for r in ranked if r["OPTION"] == supplier_score.OPTION_KEEP), None),
         "CHEAPEST": next((r["LIFNR"] for r in ranked if r["IS_CHEAPEST"]), None),
         "FASTEST": next((r["LIFNR"] for r in ranked if r["IS_FASTEST"]), None),
     }

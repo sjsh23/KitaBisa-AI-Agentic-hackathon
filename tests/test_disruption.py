@@ -22,6 +22,14 @@ def test_gap_days_sign():
     assert disruption.gap_days("2026-10-04", STOCKOUT) == -2
 
 
+def test_timing_text_never_has_a_signed_number():
+    # Team note 19 Oct: "-3 days after stock runs out" reads badly; say "before".
+    assert disruption.timing_text(-3) == "arrives 3 days before stock runs out"
+    assert disruption.timing_text(-1) == "arrives 1 day before stock runs out"
+    assert disruption.timing_text(5) == "arrives 5 days after stock runs out"
+    assert disruption.timing_text(0) == "arrives on the day stock runs out"
+
+
 def test_no_flag_below_threshold_and_without_notice():
     result = disruption.evaluate_po(PO, 0.49, [], STOCKOUT)
     assert result["FLAGGED"] is False
@@ -74,3 +82,5 @@ def test_capacity_shortfall_gap_is_for_the_remainder():
     assert result["PARTIAL_ARRIVAL"] == "2026-10-04"
     assert result["EXPECTED_ARRIVAL"] == "2026-10-14" and result["GAP_DAYS"] == 8
     assert result["REASONS"][0]["REMAINDER_GAP_DAYS"] == 8
+    assert result["ARRIVAL_VS_STOCKOUT"] == ("the on-time part arrives 2 days before stock runs "
+                                             "out, the remainder arrives 8 days after stock runs out")

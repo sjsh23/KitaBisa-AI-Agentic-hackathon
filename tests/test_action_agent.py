@@ -140,9 +140,12 @@ def test_drafts_follow_the_recommendation(adapter):
     report = ActionAgent(adapter=adapter).act(ev)
     for case, acted in zip(ev["CASES"], report["CASES"]):
         best = case["SCORING"]["CANDIDATES"][0]
+        if best["OPTION"] == "KEEP_CURRENT_PO":   # S2 in `all`: keeping PO 4500000432 wins
+            assert acted["ORDERS"] == [] and "nothing drafted" in acted["NOTE"]
+            continue
         assert [o["LIFNR"] for o in acted["ORDERS"]] == [p["LIFNR"] for p in order_parts(best)]
         assert sum(o["MENGE"] for o in acted["ORDERS"]) == case["QTY"]
-    assert len({o["EBELN"] for c in report["CASES"] for o in c["ORDERS"]}) == 3
+    assert len({o["EBELN"] for c in report["CASES"] for o in c["ORDERS"]}) == 2
 
 
 def test_split_recommendation_gets_two_drafts(adapter):
@@ -171,8 +174,9 @@ def test_human_approvals_release_everything(adapter):
     assert all(o["NEXT"] == NEXT_DONE and o["STATUS"] == "RELEASED" for o in orders)
     by = {o["EBELN"]: o["RELEASED_BY"] for o in orders}
     assert by[report["CASES"][0]["ORDERS"][0]["EBELN"]] == "MANAGER01"   # S1, above threshold
-    assert {by[c["ORDERS"][0]["EBELN"]] for c in report["CASES"][1:]} == {"BUYER02", "BUYER04"}
-    assert report["HANDED_BACK"] is False
+    assert {by[c["ORDERS"][0]["EBELN"]] for c in report["CASES"][1:] if c["ORDERS"]} == {"BUYER04"}
+    # S2 drafted nothing (keeping PO 4500000432 ranks #1), so the buyer still decides.
+    assert report["HANDED_BACK"] is True
 
 
 def test_act_is_deterministic(adapter):
@@ -197,3 +201,26 @@ def test_cli_prints_action_and_approvals(monkeypatch, capsys):
     main(["S1", "--no-llm", "--json"])
     data = json.loads(capsys.readouterr().out)
     assert data["POS"][0]["STATUS"] == "PENDING_APPROVAL"
+
+
+# ------------------------------------------------- the old PO (proposal item 5)
+@pytest.mark.parametrize("scenario, action, new_menge, words", [
+    ("S1", "CANCEL", 0.0, "it would arrive 2026-10-11, 5 days after stock runs out"),
+    ("S2", "CANCEL", 0.0, "now asks Rp18,700 per kg instead of Rp17,650"),
+    ("S3", "REDUCE", 4_800.0, "reduce from 12,000 to 4,800 kg (the part arriving 2026-10-01)"),
+])
+def test_every_case_says_what_happens_to_the_old_po(adapter, scenario, action, new_menge, words):
+    report = ActionAgent(adapter=adapter).act(evaluation(adapter, scenario))
+    old = report["CASES"][0]["OLD_PO"]
+    assert (old["ACTION"], old["NEW_MENGE"]) == (action, new_menge)
+    assert words in old["TEXT"] and "GESIT does not change the old PO" in old["TEXT"]
+    assert old["TEXT"] in format_action(report)
+
+
+def test_keep_recommendation_drafts_nothing(adapter):
+    agent = ActionAgent(adapter=adapter)
+    report = agent.act(evaluation(adapter, "all"))
+    s2 = next(c for c in report["CASES"] if c["EBELN"] == "4500000432")
+    assert s2["ORDERS"] == [] and s2["OLD_PO"]["ACTION"] == "KEEP"
+    assert "accepts the revised price Rp18,700 per kg (was Rp17,650)" in s2["OLD_PO"]["TEXT"]
+    assert all(po["REPLACES_EBELN"] != "4500000432" for po in agent.store.all())

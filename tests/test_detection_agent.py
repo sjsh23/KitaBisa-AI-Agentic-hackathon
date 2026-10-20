@@ -82,6 +82,8 @@ def test_gaps_per_scenario_and_urgency_order(adapter):
     reason = s3["REASONS"][0]
     assert reason["REMAINDER_KG"] == 7200.0 and reason["REMAINDER_GAP_DAYS"] == 5
     assert (s3["PARTIAL_ARRIVAL"], s3["EXPECTED_ARRIVAL"]) == ("2026-10-01", "2026-10-11")
+    assert s2["ARRIVAL_VS_STOCKOUT"] == "arrives 3 days before stock runs out"
+    assert "7,200 kg on 2026-10-11 (5 days after stock runs out)" in format_report(s3_report)
     assert s1["PARTIAL_ARRIVAL"] is None and s2["PARTIAL_ARRIVAL"] is None
     assert "2026-10-01 / 2026-10-11" in format_report(s3_report)
 
@@ -119,7 +121,9 @@ def test_run_adds_reasoning(adapter):
     report = make_agent(adapter, {}, reasoner).run(MATNR, notices_for("S1", adapter.scenarios()))
     assert report["REASONING"] == "PO 4500000431 is at risk."
     assert report["REASONING_ERROR"] is None
-    assert seen["FLAGGED_POS"][0]["GAP_DAYS"] == 5
+    # The gap goes to the model in words only, so it cannot write "-3 days after".
+    assert seen["FLAGGED_POS"][0]["ARRIVAL_VS_STOCKOUT"] == "arrives 5 days after stock runs out"
+    assert "GAP_DAYS" not in seen["FLAGGED_POS"][0]
 
 
 def test_reasoning_is_tidied(adapter):

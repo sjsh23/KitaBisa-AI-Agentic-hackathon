@@ -13,6 +13,14 @@ For every case with a recommendation:
    approval (FR-ACT-3). If POL-1 denies it (NETWR above the threshold), the agent
    calls `submit_for_approval` and hands back to the manager (FR-ACT-2, FR-SUP-2).
 
+When keeping the current PO ranks #1 (proposed, docs/prd_change_proposals.md
+item 4), nothing is drafted and the case goes back to the buyer.
+
+Every case also says what happens to the old PO (OLD_PO): cancel it, reduce it to
+the part that still arrives on time (capacity shortfall), or keep it. GESIT does
+not change the old PO itself: PRD section 8 has no tool for it, so the buyer does
+it in S/4 (proposal item 5).
+
 The agent never releases a PO: `release_po` is an approval tool and POL-4 denies
 it to agents. Only a human principal releases (`human_approvals` stands in for
 the clicks in the terminal). No LLM is used here; every value comes from the
@@ -25,6 +33,7 @@ from typing import Any
 from adapters import CsvAdapter, PoStore, default_adapter
 from adapters.po_store import STATUS_RELEASED
 from policy import AGENT, APPROVAL_THRESHOLD_IDR, Principal, authorize, buyer, manager
+from scoring import disruption, supplier_score
 from tools import draft_po, release_po, submit_for_approval
 
 AGENT_NAME = "action"
@@ -33,6 +42,11 @@ NEXT_BUYER = "BUYER_ONE_CLICK"       # within policy for the buyer (FR-ACT-3)
 NEXT_MANAGER = "MANAGER_APPROVAL"    # POL-1 denied the buyer, routed to the manager (FR-ACT-2)
 NEXT_BLOCKED = "BLOCKED"             # denied for another reason, nobody can release it
 NEXT_DONE = "RELEASED"
+
+OLD_PO_CANCEL = "CANCEL"
+OLD_PO_REDUCE = "REDUCE"
+OLD_PO_KEEP = "KEEP"
+OLD_PO_BY = "Done by the buyer in S/4; GESIT does not change the old PO."
 
 
 def order_parts(row: dict[str, Any]) -> list[dict[str, Any]]:
@@ -58,6 +72,60 @@ def reason_text(case: dict[str, Any], part_no: int, n_parts: int) -> str:
     return text
 
 
+def _reason(current: dict[str, Any], code: str) -> dict[str, Any] | None:
+    return next((r for r in current["REASONS"] if r["CODE"] == code), None)
+
+
+def old_po_action(case: dict[str, Any]) -> dict[str, Any] | None:
+    """What happens to the flagged PO, in words built from the numbers (simulated).
+
+    Keep it when keeping ranked #1; reduce it to the on-time part after a capacity
+    shortfall; otherwise cancel it once the replacement is released.
+    """
+    current = case.get("CURRENT_PO")
+    rows = case["SCORING"]["CANDIDATES"]
+    if current is None or not rows:
+        return None
+    ebeln, menge = current["EBELN"], current["MENGE"]
+    price = _reason(current, disruption.REASON_PRICE_INCREASE)
+    if rows[0].get("OPTION") == supplier_score.OPTION_KEEP:
+        new = next((r for r in rows if r.get("OPTION") != supplier_score.OPTION_KEEP), None)
+        text = (f"Old PO {ebeln}: keep it as it is, expected cost "
+                f"Rp{rows[0]['EXPECTED_COST']:,}")
+        if new:
+            text += (f" against Rp{new['EXPECTED_COST']:,} for the best new order, from "
+                     f"{new['LIFNR']}")
+        text += " (simulated)."
+        if price:
+            text += (f" The buyer accepts the revised price Rp{price['NEW_NETPR']:,} per kg "
+                     f"(was Rp{price['PO_NETPR']:,}) or negotiates it.")
+        return {"EBELN": ebeln, "ACTION": OLD_PO_KEEP, "MENGE": menge, "NEW_MENGE": menge,
+                "TEXT": f"{text} {OLD_PO_BY}"}
+
+    shortfall = _reason(current, disruption.REASON_CAPACITY_SHORTFALL)
+    if shortfall:
+        new_menge = menge - case["QTY"]
+        text = (f"Old PO {ebeln}: reduce from {menge:,.0f} to {new_menge:,.0f} kg (the part "
+                f"arriving {current['PARTIAL_ARRIVAL'] or current['ARRIVAL']}) once the "
+                f"replacement is released; the {case['QTY']:,.0f} kg remainder moves to the "
+                "new order.")
+        return {"EBELN": ebeln, "ACTION": OLD_PO_REDUCE, "MENGE": menge, "NEW_MENGE": new_menge,
+                "TEXT": f"{text} {OLD_PO_BY}"}
+
+    delay = _reason(current, disruption.REASON_DELAY_NOTICE)
+    if delay:
+        timing = current["ARRIVAL_VS_STOCKOUT"].removeprefix("arrives ")
+        why = f"it would arrive {delay['NEW_EINDT']}, {timing}"
+    elif price:
+        why = (f"supplier {current['LIFNR']} now asks Rp{price['NEW_NETPR']:,} per kg instead of "
+               f"Rp{price['PO_NETPR']:,}")
+    else:
+        why = f"P(late) {current['P_LATE']:.2f}"
+    text = f"Old PO {ebeln}: cancel its {menge:,.0f} kg once the replacement is released ({why})."
+    return {"EBELN": ebeln, "ACTION": OLD_PO_CANCEL, "MENGE": menge, "NEW_MENGE": 0.0,
+            "TEXT": f"{text} {OLD_PO_BY}"}
+
+
 class ActionAgent:
     """Drafts the recommended replacement POs and routes them by policy."""
 
@@ -75,9 +143,15 @@ class ActionAgent:
         for case in evaluation["CASES"]:
             buyer_id = buyers[case["EBELN"]]
             out = {"EBELN": case["EBELN"], "LIFNR": case["LIFNR"], "BUYER": buyer_id,
-                   "QTY": case["QTY"], "ORDERS": [], "NOTE": None}
+                   "QTY": case["QTY"], "ORDERS": [], "NOTE": None,
+                   "OLD_PO": old_po_action(case)}
             if not case["SCORING"]["CANDIDATES"]:
                 out["NOTE"] = "no candidate supplier, nothing drafted; handed back to the buyer"
+                cases.append(out)
+                continue
+            if case["SCORING"]["CANDIDATES"][0].get("OPTION") == supplier_score.OPTION_KEEP:
+                out["NOTE"] = ("keeping the current PO ranks #1, nothing drafted; handed back "
+                               "to the buyer")
                 cases.append(out)
                 continue
             parts = order_parts(case["SCORING"]["CANDIDATES"][0])

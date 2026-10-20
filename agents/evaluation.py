@@ -49,11 +49,15 @@ GEN_AI_HUB_NOTE = "not connected yet, so no Gen AI Hub masking setting applies (
 SYSTEM_PROMPT = f"""You are the Supplier Evaluation agent of GESIT, a procurement assistant \
 for a food and beverage manufacturer. A purchase order is at risk and backup suppliers have \
 been ranked by expected cost: purchase cost plus expected days without stock times the \
-downtime cost per day. You receive the facts for one replacement order as JSON. Every value \
-is a ready-made phrase. All data is simulated.
+downtime cost per day. Keeping the current order as it is was ranked the same way. You \
+receive the facts for one replacement order as JSON. Every value is a ready-made phrase. All \
+data is simulated.
 
 Write an explanation for the buyer in plain English, at most 100 words:
-- Recommend the RECOMMENDED supplier and give its expected cost.
+- Recommend the RECOMMENDED option and give its expected cost. If RECOMMENDED_IS_KEEP is \
+true, recommend keeping the current order and placing no new order.
+- If KEEP_CURRENT_ORDER is present, say in one sentence why the recommendation beats keeping \
+the current order: its EXPECTED_COST phrase followed by its WHY phrase.
 - Explain why it beats CHEAPEST and FASTEST using their VS_RECOMMENDED phrases: give the \
 EXPECTED_COST phrase followed by the WHY phrase, copied with its figures, so the buyer sees \
 the reason and not only the cost difference. If RECOMMENDED_IS_CHEAPEST or \
@@ -102,10 +106,31 @@ def replacement_qty(po: dict[str, Any]) -> float:
     return float(po["MENGE"])
 
 
+def current_po_terms(po: dict[str, Any]) -> dict[str, Any]:
+    """The flagged PO as it stands: what keeping it would cost and when it arrives.
+
+    NETPR is the revised price after a price increase; ARRIVAL is the expected arrival
+    from detection (a delay notice's new date, or the remainder's date for a shortfall).
+    The Action agent also uses this to say what happens to the old PO.
+    """
+    netpr = int(po["NETPR"])
+    for reason in po["REASONS"]:
+        if reason["CODE"] == disruption.REASON_PRICE_INCREASE:
+            netpr = reason["NEW_NETPR"]
+    return {"EBELN": po["EBELN"], "LIFNR": po["LIFNR"], "MENGE": float(po["MENGE"]),
+            "PO_NETPR": int(po["NETPR"]), "NETPR": netpr, "ARRIVAL": po["EXPECTED_ARRIVAL"],
+            "PARTIAL_ARRIVAL": po.get("PARTIAL_ARRIVAL"), "P_LATE": po["P_LATE"],
+            "ARRIVAL_VS_STOCKOUT": po["ARRIVAL_VS_STOCKOUT"], "REASONS": po["REASONS"]}
+
+
+def is_keep(row: dict[str, Any]) -> bool:
+    return row.get("OPTION") == supplier_score.OPTION_KEEP
+
+
 def reserve(reserved: dict[str, float], table: dict[str, Any]) -> None:
     """Add the recommended order (both parts of a split) to the capacity reservations."""
-    if not table["CANDIDATES"]:
-        return
+    if not table["CANDIDATES"] or is_keep(table["CANDIDATES"][0]):
+        return   # keeping the current PO takes no backup supplier's spare capacity
     best = table["CANDIDATES"][0]
     for part in (best, best["SPLIT_WITH"]):
         if part:
@@ -137,18 +162,23 @@ class EvaluationAgent:
         steps, cases = [], []
         for po in detection["FLAGGED_POS"]:
             qty = replacement_qty(po)
+            current = current_po_terms(po)
+            keep_input = {k: current[k] for k in ("EBELN", "LIFNR", "NETPR", "ARRIVAL", "P_LATE")}
             table = score_suppliers(matnr, qty, need_by, exclude_lifnr=disrupted,
                                     today=detection["TODAY"], reserved_kg=reserved,
-                                    adapter=self.adapter, client=self.rpt_client)
+                                    adapter=self.adapter, client=self.rpt_client,
+                                    current_po=keep_input)
             reserve(reserved, table)
+            best = (f"keep PO {po['EBELN']}" if table["RECOMMENDED_OPTION"] == supplier_score.OPTION_KEEP
+                    else table["RECOMMENDED"])
             steps.append({
                 "TOOL": "score_suppliers",
                 "INPUT": {"matnr": matnr, "qty": qty, "need_by": need_by,
-                          "exclude_lifnr": disrupted, "reserved_kg": table["RESERVED_KG"]},
-                "RESULT": (f"{len(table['CANDIDATES'])} candidates, {len(table['EXCLUDED'])} "
+                          "exclude_lifnr": disrupted, "reserved_kg": table["RESERVED_KG"],
+                          "current_po": keep_input},
+                "RESULT": (f"{len(table['CANDIDATES'])} options, {len(table['EXCLUDED'])} "
                            f"excluded, model {table['PREDICTION']['MODEL_ID']}, "
-                           f"fallback {table['PREDICTION']['FALLBACK']}, "
-                           f"#1 {table['RECOMMENDED']}"),
+                           f"fallback {table['PREDICTION']['FALLBACK']}, #1 {best}"),
             })
             cases.append({
                 "EBELN": po["EBELN"],
@@ -156,6 +186,7 @@ class EvaluationAgent:
                 "REASON_CODES": [r["CODE"] for r in po["REASONS"]],
                 "QTY": qty,
                 "NEED_BY": need_by,
+                "CURRENT_PO": current,
                 "SCORING": table,
             })
         return {
@@ -220,10 +251,12 @@ def _row_facts(row: dict[str, Any], qty: float) -> dict[str, Any]:
         quantity = (f"{supplier_score.CANNOT_COVER_NOTE}: {row['MENGE']:,.0f} kg from "
                     f"supplier {row['LIFNR']} plus {part['MENGE']:,.0f} kg from "
                     f"supplier {part['LIFNR']} at {rp(part['NETPR'])} per kg")
+    keep = is_keep(row)
     return {
-        "SUPPLIER": f"supplier {row['LIFNR']}",
+        "SUPPLIER": (f"keep order {row['KEEP_EBELN']} with supplier {row['LIFNR']}, no new order"
+                     if keep else f"supplier {row['LIFNR']}"),
         "RANK": f"rank {row['RANK']}, score {row['SCORE']}",
-        "PRICE": f"{rp(row['NETPR'])} per kg",
+        "PRICE": f"{rp(row['NETPR'])} per kg" + (" (current order price)" if keep else ""),
         "ARRIVAL": f"arrives {row['ARRIVAL']}",
         "LATE_RISK": f"{row['P_LATE_PCT']}% chance of arriving late",
         "STOCKOUT": f"{row['EXPECTED_STOCKOUT_DAYS']} expected days without stock",
@@ -240,15 +273,19 @@ def _phrase(part: dict[str, Any]) -> str:
     return part["DIRECTION"] if part["AMOUNT"] == 0 else f"{part['DIRECTION']} {rp(part['AMOUNT'])}"
 
 
+def _label(row: dict[str, Any]) -> str:
+    """How a comparison names a row: 'supplier 100109' or 'the current order 4500000432'."""
+    return f"the current order {row['KEEP_EBELN']}" if is_keep(row) else f"supplier {row['LIFNR']}"
+
+
 def _why_phrase(diff: dict[str, Any], row: dict[str, Any], best: dict[str, Any]) -> str | None:
     """Why `row` costs more than #1, with the figure behind it (FR-SEL-4), or None."""
     if diff["MAIN_DRIVER"] == "RISK":
         return (f"mainly from {_phrase(diff['RISK'])} ({row['EXPECTED_STOCKOUT_DAYS']} expected "
-                f"days without stock against {best['EXPECTED_STOCKOUT_DAYS']} for supplier "
-                f"{best['LIFNR']})")
+                f"days without stock against {best['EXPECTED_STOCKOUT_DAYS']} for {_label(best)})")
     if diff["MAIN_DRIVER"] == "PURCHASE":
         return (f"mainly from {_phrase(diff['PURCHASE'])} ({rp(row['NETPR'])} per kg against "
-                f"{rp(best['NETPR'])} for supplier {best['LIFNR']})")
+                f"{rp(best['NETPR'])} for {_label(best)})")
     return None
 
 
@@ -271,8 +308,11 @@ def _versus_facts(row: dict[str, Any], best: dict[str, Any], qty: float) -> dict
 def facts_for_llm(case: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
     """What the model may see for one case, as phrases: LIFNR numbers only, no names, no buyer."""
     table = case["SCORING"]
-    rows = {r["LIFNR"]: r for r in table["CANDIDATES"]}
-    best = rows[table["RECOMMENDED"]]
+    rows = table["CANDIDATES"]
+    best = rows[0]
+    cheapest = next((r for r in rows if r["IS_CHEAPEST"]), None)   # new orders only
+    fastest = next((r for r in rows if r["IS_FASTEST"]), None)
+    keep = next((r for r in rows if is_keep(r)), None)
     qty = case["QTY"]
     reasons = ", ".join(c.lower().replace("_", " ") for c in case["REASON_CODES"])
     facts: dict[str, Any] = {
@@ -280,15 +320,19 @@ def facts_for_llm(case: dict[str, Any], report: dict[str, Any]) -> dict[str, Any
         "REPLACES": f"order {case['EBELN']} from supplier {case['LIFNR']} ({reasons})",
         "QUANTITY": f"{qty:,.0f} kg needed by the stock-out date {case['NEED_BY']}",
         "DOWNTIME_COST": f"{rp(table['DOWNTIME_COST_PER_DAY'])} per day without stock",
-        "CANDIDATES": f"{len(rows)} suppliers ranked",
+        "CANDIDATES": (f"{sum(not is_keep(r) for r in rows)} suppliers ranked"
+                       + (", plus keeping the current order" if keep else "")),
         "RECOMMENDED": _row_facts(best, qty),
-        "RECOMMENDED_IS_CHEAPEST": table["CHEAPEST"] == table["RECOMMENDED"],
-        "RECOMMENDED_IS_FASTEST": table["FASTEST"] == table["RECOMMENDED"],
+        "RECOMMENDED_IS_KEEP": best is keep,
+        "RECOMMENDED_IS_CHEAPEST": best is cheapest,
+        "RECOMMENDED_IS_FASTEST": best is fastest,
     }
-    if not facts["RECOMMENDED_IS_CHEAPEST"]:
-        facts["CHEAPEST"] = _versus_facts(rows[table["CHEAPEST"]], best, qty)
-    if not facts["RECOMMENDED_IS_FASTEST"]:
-        facts["FASTEST"] = _versus_facts(rows[table["FASTEST"]], best, qty)
+    if cheapest is not None and best is not cheapest:
+        facts["CHEAPEST"] = _versus_facts(cheapest, best, qty)
+    if fastest is not None and best is not fastest:
+        facts["FASTEST"] = _versus_facts(fastest, best, qty)
+    if keep is not None and best is not keep:   # why not simply keep the current order
+        facts["KEEP_CURRENT_ORDER"] = _versus_facts(keep, best, qty)
     if best["N_RECEIPTS"] < MIN_TRACK_RECORD:
         facts["TRACK_RECORD_WARNING"] = (f"the recommendation rests on only {best['N_RECEIPTS']} "
                                          f"past deliveries from supplier {best['LIFNR']}")
@@ -304,6 +348,8 @@ def required_mentions(facts: dict[str, Any]) -> list[tuple[str, str]]:
     if any(facts.get(k, {}).get("VS_RECOMMENDED", {}).get("NEAR_TIE")
            for k in ("CHEAPEST", "FASTEST")):
         required.append(("near tie", r"near[ -]tie"))
+    if facts.get("RECOMMENDED_IS_KEEP") or "KEEP_CURRENT_ORDER" in facts:
+        required.append(("keeping the current order", r"\bkeep"))
     if "TRACK_RECORD_WARNING" in facts:
         n = facts["RECOMMENDED"]["PAST_DELIVERIES"].split()[0]
         required.append((f"{n} past deliveries", rf"\b{n}\b[^.]{{0,60}}(deliver|receipt)"))

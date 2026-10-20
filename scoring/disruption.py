@@ -27,6 +27,19 @@ def gap_days(expected_arrival: str, stockout: str) -> int:
     return (date.fromisoformat(expected_arrival) - date.fromisoformat(stockout)).days
 
 
+def _days(n: int) -> str:
+    return f"{n} day" if n == 1 else f"{n} days"
+
+
+def timing_text(gap: int) -> str:
+    """GAP_DAYS in words, never a signed number: "arrives 3 days before stock runs out"."""
+    if gap < 0:
+        return f"arrives {_days(-gap)} before stock runs out"
+    if gap > 0:
+        return f"arrives {_days(gap)} after stock runs out"
+    return "arrives on the day stock runs out"
+
+
 def price_increase_pct(po_netpr: float, new_netpr: float) -> float:
     """Revision relative to the PO price, as a fraction (0.06 = +6%)."""
     return (new_netpr - po_netpr) / po_netpr
@@ -41,8 +54,9 @@ def evaluate_po(
     """Apply FR-DET-2 and FR-DET-3 to one open PO line.
 
     `notices` are the supplier notices for this EBELN (scenarios.json shape).
-    Returns the PO with P_LATE, FLAGGED, REASONS, PARTIAL_ARRIVAL, EXPECTED_ARRIVAL and
-    GAP_DAYS. For a capacity shortfall EXPECTED_ARRIVAL and GAP_DAYS describe the remainder.
+    Returns the PO with P_LATE, FLAGGED, REASONS, PARTIAL_ARRIVAL, EXPECTED_ARRIVAL,
+    GAP_DAYS and ARRIVAL_VS_STOCKOUT (the gap in words). For a capacity shortfall
+    EXPECTED_ARRIVAL and GAP_DAYS describe the remainder.
     """
     reasons: list[dict[str, Any]] = []
     expected_arrival = po["EINDT"]
@@ -90,6 +104,11 @@ def evaluate_po(
                 })
             reasons.append(reason)
 
+    gap = gap_days(expected_arrival, stockout)
+    timing = timing_text(gap)
+    if partial_arrival:   # say which part is late, so the on-time part is not mistaken for it
+        timing = (f"the on-time part {timing_text(gap_days(partial_arrival, stockout))}, "
+                  f"the remainder {timing}")
     return {
         **po,
         "P_LATE": p_late,
@@ -99,5 +118,6 @@ def evaluate_po(
         "PARTIAL_ARRIVAL": partial_arrival,
         "EXPECTED_ARRIVAL": expected_arrival,
         "STOCKOUT_DATE": stockout,
-        "GAP_DAYS": gap_days(expected_arrival, stockout),
+        "GAP_DAYS": gap,
+        "ARRIVAL_VS_STOCKOUT": timing,
     }

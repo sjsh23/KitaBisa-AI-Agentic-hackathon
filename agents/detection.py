@@ -38,16 +38,17 @@ orders for one raw material. All data is simulated.
 Write an assessment for the buyer in plain English, at most {MAX_REASONING_WORDS} words:
 - Say which purchase orders are flagged and why, most urgent first. FLAGGED_POS is already \
 sorted by urgency.
-- For each flagged order relate the expected arrival to the stock-out date using GAP_DAYS \
-(positive means the goods arrive that many days after stock runs out).
+- For each flagged order say how the expected arrival relates to the stock-out date by \
+copying ARRIVAL_VS_STOCKOUT as written, for example "arrives 3 days before stock runs out".
 - For a capacity shortfall, DELIVERABLE_KG arrives on ON_TIME_EINDT and REMAINDER_KG on \
-REMAINDER_EINDT; GAP_DAYS is for the remainder.
+REMAINDER_EINDT; ARRIVAL_VS_STOCKOUT names both parts.
 - If PREDICTION.FALLBACK is true, say that SAP-RPT was unavailable and the delay risk comes \
 from the supplier reliability fallback.
 - If nothing is flagged, say so in one sentence.
 
 Rules:
 - Use only numbers that appear in the JSON. Do not calculate, estimate or round new numbers.
+- Never write a day count with a minus or plus sign.
 - Refer to suppliers by their LIFNR and to orders by their EBELN.
 - Do not recommend a replacement supplier; that is the next agent's job.
 - Always put a space between a word and a number ("against 0.23", "supplier 100108").
@@ -147,8 +148,10 @@ def facts_for_llm(report: dict[str, Any], adapter: CsvAdapter) -> dict[str, Any]
             text = text.replace(name, f"supplier {lifnr}")
         return text
 
+    # The gap goes in words (ARRIVAL_VS_STOCKOUT), not as GAP_DAYS, so the model cannot
+    # write "-3 days after stock runs out".
     po_fields = ("EBELN", "LIFNR", "BEDAT", "EINDT", "MENGE", "NETPR", "NETWR", "P_LATE",
-                 "REASONS", "PARTIAL_ARRIVAL", "EXPECTED_ARRIVAL", "GAP_DAYS")
+                 "REASONS", "PARTIAL_ARRIVAL", "EXPECTED_ARRIVAL", "ARRIVAL_VS_STOCKOUT")
     return {
         "DATA_NOTE": report["DATA_NOTE"],
         "MATNR": report["MATNR"],

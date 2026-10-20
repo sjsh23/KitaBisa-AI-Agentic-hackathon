@@ -24,13 +24,15 @@ from agents.action import ActionAgent, human_approvals
 from agents.detection import DetectionAgent
 from agents.evaluation import EvaluationAgent
 from integrations.sap.rpt_client import RptClient
+from scoring import disruption, supplier_score
 
 DEFAULT_MATNR = "RM-GULA-001"
 REASON_LABELS = {"PREDICTED_LATE": "predicted late", "DELAY_NOTICE": "delay notice",
                  "PRICE_INCREASE": "price increase", "CAPACITY_SHORTFALL": "capacity shortfall"}
 EXCLUDED_LABELS = {"OFF_PANEL": "off the approved panel", "QUOTE_NOT_VALID": "quote not valid today",
                    "NO_SPARE_CAPACITY": "no spare capacity",
-                   "DISRUPTED_SUPPLIER": "has a flagged PO in this run (EXCLUDE_FLAGGED_SUPPLIERS)"}
+                   "DISRUPTED_SUPPLIER": "has a flagged PO in this run, so no new order from it "
+                                         "(EXCLUDE_FLAGGED_SUPPLIERS)"}
 
 
 def notices_for(scenario: str, scenarios: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -59,7 +61,8 @@ def _reason_text(reason: dict[str, Any]) -> str:
             f"{reason['ORDERED_KG']:,.0f} kg deliverable")
     if "REMAINDER_EINDT" in reason:   # FR-DET-3: the gap is the remainder's
         text += (f" on {reason['ON_TIME_EINDT']}, {reason['REMAINDER_KG']:,.0f} kg on "
-                 f"{reason['REMAINDER_EINDT']} (GAP {reason['REMAINDER_GAP_DAYS']:+d})")
+                 f"{reason['REMAINDER_EINDT']} "
+                 f"({disruption.timing_text(reason['REMAINDER_GAP_DAYS']).removeprefix('arrives ')})")
     return text
 
 
@@ -93,7 +96,8 @@ def format_report(report: dict[str, Any]) -> str:
         flag = "; ".join(_reason_text(r) for r in po["REASONS"]) or "-"
         lines.append(f"{po['EBELN']:<11}{po['LIFNR']:<8}{po['MENGE']:>9,.0f}  {po['EINDT']:<11}"
                      f"{p_late:>8}  {arrivals[po['EBELN']]:<{width}}{po['GAP_DAYS']:>+4}  {flag}")
-    lines += ["", "GAP = days from the stock-out date to the expected arrival (positive = too late).",
+    lines += ["", "GAP = expected arrival against the stock-out date: -3 = arrives 3 days before "
+                  "stock runs out, +5 = arrives 5 days after (too late).",
               "For a split delivery ARRIVAL shows both dates and GAP is for the later part.",
               f"Flagged, most urgent first: {', '.join(report['FLAGGED_EBELN']) or 'none'}"]
     if "REASONING" in report:
@@ -109,6 +113,8 @@ def fixes_text(fixes: list[str] | None) -> list[str]:
 
 
 def _note(row: dict[str, Any]) -> str:
+    if row.get("OPTION") == supplier_score.OPTION_KEEP:
+        return f"keep PO {row['KEEP_EBELN']} as it is, no new order"
     marks = [m for m, on in (("cheapest", row["IS_CHEAPEST"]), ("fastest", row["IS_FASTEST"])) if on]
     if row["SPLIT_WITH"]:   # FR-SEL-2: never ranked for more than it can supply
         part = row["SPLIT_WITH"]
@@ -150,16 +156,17 @@ def format_case(case: dict[str, Any]) -> list[str]:
     lines += [
         "",
         f"{'RANK':>4}  {'LIFNR':<8}{'SPARE kg':>9}{'NETPR':>7}{'LEAD':>5}  {'ARRIVAL':<11}"
-        f"{'P(late)':>8}{'d_late':>7}{'GRs':>5}{'OUT d':>7}{'PURCHASE Rp':>14}{'RISK Rp':>13}"
-        f"{'EXPECTED Rp':>14}{'SCORE':>7}  NOTE",
+        f"{'P(late)':>8}{'d_late':>7}{'GRs':>5}{'OUT d':>7}{'PURCHASE Rp':>14}{'RISK Rp':>15}"
+        f"{'EXPECTED Rp':>15}{'SCORE':>7}  NOTE",
     ]
     for r in table["CANDIDATES"]:
+        spare = "-" if r["AVAILABLE_KG"] is None else f"{r['AVAILABLE_KG']:,.0f}"
         lines.append(
-            f"{r['RANK']:>4}  {r['LIFNR']:<8}{r['AVAILABLE_KG']:>9,.0f}{r['NETPR']:>7,}"
+            f"{r['RANK']:>4}  {r['LIFNR']:<8}{spare:>9}{r['NETPR']:>7,}"
             f"{r['LEAD_DAYS']:>5}  {r['ARRIVAL']:<11}"
             f"{r['P_LATE']:>8.2f}{r['D_LATE']:>7.1f}{r['N_RECEIPTS']:>5}"
             f"{r['EXPECTED_STOCKOUT_DAYS']:>7.2f}"
-            f"{r['PURCHASE_COST']:>14,}{r['RISK_COST']:>13,}{r['EXPECTED_COST']:>14,}"
+            f"{r['PURCHASE_COST']:>14,}{r['RISK_COST']:>15,}{r['EXPECTED_COST']:>15,}"
             f"{r['SCORE']:>7.1f}  {_note(r)}")
     if not table["CANDIDATES"]:
         lines.append("  no candidate supplier")
@@ -171,9 +178,15 @@ def format_case(case: dict[str, Any]) -> list[str]:
         f"OUT d = expected stock-out days.",
         f"EXPECTED = PURCHASE + OUT d x Rp{table['DOWNTIME_COST_PER_DAY']:,} per day of "
         f"downtime (RISK).",
-        f"Recommended: {table['RECOMMENDED'] or 'none'}, cheapest: {table['CHEAPEST'] or 'none'}, "
-        f"fastest: {table['FASTEST'] or 'none'}",
     ]
+    if table.get("KEEP"):
+        lines.append(f"Keep row = PO {case['EBELN']} as it stands: its price (the revised one "
+                     "after a price increase), its expected arrival and its own P(late).")
+    best = table["RECOMMENDED"] or "none"
+    if table.get("RECOMMENDED_OPTION") == supplier_score.OPTION_KEEP:
+        best = f"keep PO {case['EBELN']} ({table['RECOMMENDED']}), no new order"
+    lines.append(f"Recommended: {best}, cheapest new order: {table['CHEAPEST'] or 'none'}, "
+                 f"fastest new order: {table['FASTEST'] or 'none'}")
     if "EXPLANATION" in case:
         lines += ["", f"Explanation ({case['EXPLANATION_MODEL']}):",
                   case["EXPLANATION"] or f"  not available ({case['EXPLANATION_ERROR']})"]
@@ -227,8 +240,11 @@ def format_action(report: dict[str, Any]) -> str:
     for case in report["CASES"]:
         lines += ["", f"Replacement for PO {case['EBELN']} (buyer {case['BUYER']}, "
                       f"{case['QTY']:,.0f} kg)"]
+        old_po = case.get("OLD_PO")
         if case["NOTE"]:
             lines.append(f"  {case['NOTE']}")
+            if old_po:
+                lines.append(old_po["TEXT"])
             continue
         lines.append(f"{'EBELN':<12}{'LIFNR':<8}{'MENGE kg':>9}{'NETPR':>8}{'NETWR Rp':>14}  "
                      f"{'EINDT':<12}STATUS")
@@ -237,6 +253,8 @@ def format_action(report: dict[str, Any]) -> str:
             lines += [f"{order['EBELN'] or '-':<12}{order['LIFNR']:<8}{order['MENGE']:>9,.0f}"
                       f"{order['NETPR']:>8,}{netwr:>14}  {order['EINDT']:<12}{order['STATUS']}",
                       f"  {_next_text(order, case['BUYER'])}"]
+        if old_po:   # what happens to the PO being replaced
+            lines.append(old_po["TEXT"])
     lines += ["", "Handed back to a human: " + ("yes" if report["HANDED_BACK"] else "no")]
     return "\n".join(lines)
 

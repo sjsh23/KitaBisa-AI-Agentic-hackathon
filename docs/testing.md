@@ -116,13 +116,18 @@ EBELN      LIFNR    MENGE kg  EINDT       P(late)  ARRIVAL     GAP  FLAG
 Flagged, most urgent first: 4500000431
 ```
 
+Below the table the GAP line reads "-3 = arrives 3 days before stock runs out, +5 = arrives
+5 days after (too late)". The Gemini assessment gets the gap in words only
+(ARRIVAL_VS_STOCKOUT, for example "arrives 3 days before stock runs out"), never as a signed
+number, so it should never write "-3 days after stock runs out".
+
 Then the other triggers:
 
 | Command | Expected flagged POs |
 |---|---|
 | `py -3.11 -m agents.run scan --no-llm` | none (no fallback P(late) reaches 0.5) |
 | `py -3.11 -m agents.run S2 --no-llm` | 4500000432, price revision +5.9% (Rp17,650 to Rp18,700 per kg) |
-| `py -3.11 -m agents.run S3 --no-llm` | 4500000433, capacity shortfall, 4,800 of 12,000 kg deliverable on 2026-10-01, 7,200 kg on 2026-10-11 (GAP +5) |
+| `py -3.11 -m agents.run S3 --no-llm` | 4500000433, capacity shortfall, 4,800 of 12,000 kg deliverable on 2026-10-01, 7,200 kg on 2026-10-11 (5 days after stock runs out) |
 | `py -3.11 -m agents.run all --no-llm` | 4500000431, 4500000433, 4500000432, in that order |
 
 Then the supplier evaluation part (simulated data, posterior fallback, so the
@@ -133,7 +138,18 @@ numbers differ from a run with the real SAP-RPT):
 | `S1` | 4500000431, 10,000 kg | 100109, expected cost Rp179,397,321 | 100103 | 100109 |
 | `S2` | 4500000432, 8,000 kg | 100109, Rp144,297,321 | 100101 | 100109 |
 | `S3` | 4500000433, 7,200 kg (the late remainder only) | 100109, Rp130,257,321 | 100101 | 100109 |
-| `all` | 4500000431, then 4500000433, then 4500000432 | 100109; 100109 split (2,500 kg, plus 4,700 kg from 100102); 100102 | 100105 | 100109, 100109, 100102 |
+| `all` | 4500000431, then 4500000433, then 4500000432 | 100109; 100109 split (2,500 kg, plus 4,700 kg from 100102); keep PO 4500000432 (Rp149,600,000) | 100105 | 100109, 100109, 100102 |
+
+Every table also ranks keeping the flagged PO as it is (NOTE "keep PO ... as it is, no new
+order", SPARE "-"): its own price (the revised Rp18,700 in S2), its expected arrival and its
+own P(late). Proposed rule, `docs/prd_change_proposals.md` item 4.
+
+| Command | Keep row | Rank |
+|---|---|---|
+| `S1` | 100101, arrives 2026-10-11 (5 days after stock runs out), Rp1,225,740,580 | last |
+| `S2` | 100103, Rp18,700, arrives 2026-10-03, no risk cost, Rp149,600,000 | 2nd, Rp5,302,679 above 100109 |
+| `S3` | 100104, remainder arrives 2026-10-11, Rp958,761,429 | last |
+| `all`, case 4500000432 | 100103, Rp149,600,000 | 1st: 100109's spare kilograms went to the earlier cases |
 
 What to check in every table:
 
@@ -142,8 +158,10 @@ What to check in every table:
   switches it off; then S2 lists 100103 as a candidate,
 - the excluded list names 100111 as "off the approved panel" (FR-SEL-1, POL-2),
   100104 and 100110 as "no spare capacity" (unless excluded for a flagged PO), and
-  the supplier of every flagged PO as "has a flagged PO in this run (EXCLUDE_FLAGGED_SUPPLIERS)",
+  the supplier of every flagged PO as "has a flagged PO in this run, so no new order from it
+  (EXCLUDE_FLAGGED_SUPPLIERS)" (its keep row is still ranked),
 - rows are sorted by EXPECTED, and EXPECTED = PURCHASE + RISK on every row,
+- "cheapest new order" and "fastest new order" never point at the keep row,
 - the SPARE kg column is never below the kilograms a row is ranked for. A row with
   less spare capacity than needed says "cannot cover full quantity: split ... kg here +
   ... kg from ...", and the two parts add up to the needed quantity,
@@ -162,7 +180,17 @@ releases a PO itself.
 | `S1` | 4500000435, 100109, 10,000 kg | Rp175,500,000 | release by BUYER01 denied by POL-1, submitted as APR-4500000435, waiting for the manager |
 | `S2` | 4500000435, 100109, 8,000 kg | Rp140,400,000 | within policy, waiting for BUYER02's one-click approval |
 | `S3` | 4500000435, 100109, 7,200 kg | Rp126,360,000 | within policy, waiting for BUYER04's one-click approval |
-| `all` | 4500000435 (as S1); 4500000436 and 4500000437 (the 100109 and 100102 split for 4500000433); 4500000438 (100102, 8,000 kg) | Rp175,500,000; Rp43,875,000 and Rp86,480,000; Rp147,200,000 | manager for the first, buyer one-click for the rest |
+| `all` | 4500000435 (as S1); 4500000436 and 4500000437 (the 100109 and 100102 split for 4500000433); nothing for 4500000432 | Rp175,500,000; Rp43,875,000 and Rp86,480,000 | manager for the first, buyer one-click for the split; 4500000432 says "keeping the current PO ranks #1, nothing drafted" |
+
+Under every case a line says what happens to the old PO (proposal item 5). GESIT does not
+change it; the buyer does it in S/4:
+
+| Command | Old PO line starts with |
+|---|---|
+| `S1` | "Old PO 4500000431: cancel its 10,000 kg once the replacement is released (it would arrive 2026-10-11, 5 days after stock runs out)" |
+| `S2` | "Old PO 4500000432: cancel its 8,000 kg ... (supplier 100103 now asks Rp18,700 per kg instead of Rp17,650)" |
+| `S3` | "Old PO 4500000433: reduce from 12,000 to 4,800 kg (the part arriving 2026-10-01)" |
+| `all`, case 4500000432 | "Old PO 4500000432: keep it as it is, expected cost Rp149,600,000 against Rp167,349,554 for the best new order, from 100102 (simulated)" |
 
 What to check:
 
@@ -174,7 +202,8 @@ What to check:
 
 Add `--approve` to simulate the human clicks: the manager (MANAGER01) releases what was
 routed to it and each buyer releases its own drafts. Every order then says
-"Released by ..." and the last line says "Handed back to a human: no".
+"Released by ...". The last line says "Handed back to a human: no" for S1, S2 and S3; in
+`all` it stays "yes", because the buyer still has to accept the revised price on 4500000432.
 
 Run the same command twice and compare: the output must be identical (NFR-2).
 
