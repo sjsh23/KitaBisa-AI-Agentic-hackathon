@@ -1,6 +1,23 @@
 """Monte Carlo of GESIT's pick against simple baselines (FR-EVA-4, simulated data).
 
     python -m eval.monte_carlo --scenario all --runs 1000 --seed 42 [--json PATH]
+        [--worlds 1,2,3 | --worlds predeclared] [--downtime-sweep 50000000,150000000]
+        [--baseline-table rpt|same|both] [--summary]
+
+Options (all numbers simulated):
+- --worlds: extra simulated worlds (eval/worlds.py), each generated into a temporary folder
+  with another generator seed; the tracked dataset is always the first world. Per world the
+  cases are built once per mode with the real agents code, then simulated. A world whose
+  predictions fell back to the posterior (after one retry), or whose ranked table lacks a
+  strategy's row, is excluded from the cross-world summary and listed.
+- --downtime-sweep: (a) decisions fixed at the dataset's downtime cost, realised cost at
+  each value; (b) decisions re-made: the ranked tables rebuilt with the downtime cost of
+  the inventory row overridden in eval only (DowntimeAdapter), then realised at that value.
+  SAP-RPT answers are replayed from the main build where the rows are the same.
+- --baseline-table: "rpt" = baselines from the RPT_ONLY table for both GESIT strategies
+  (as before); "same" = GESIT_LEARNING against the baselines of its own LEARNING table;
+  "both" (default) = the RPT_ONLY block, then a labelled LEARNING-table block.
+- --summary: one compact table per scenario and for the total, instead of the full tables.
 
 Cases: the three cases of the one-world run, built exactly as `python -m agents.run all`
 builds them (Detection with every notice on file, Supplier Evaluation with Detection's full
@@ -45,16 +62,17 @@ Only eval/ may use data_gen/world.py (D-1).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
 import sys
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Iterator, Protocol
+from typing import Any, Callable, Iterator, Mapping, Protocol
 
 import numpy as np
 
@@ -62,6 +80,7 @@ from adapters import CsvAdapter, default_adapter
 from agents.detection import DetectionAgent
 from agents.run import DEFAULT_MATNR, notices_on_file
 from agents.supplier_evaluation import SupplierEvaluationAgent
+from eval import worlds as world_gen
 from integrations.sap.rpt_client import RptClient
 from scoring import reliability, supplier_score
 
@@ -87,6 +106,11 @@ DRIFT_SUPPLIER, DRIFT_SPLIT_DATE = "100108", "2026-03-01"
 STOCKOUT_DEFINITION = ("realised stock-out days = quantity-weighted average over the parts of "
                        "an order of max(0, real arrival - stock-out date); real arrival = "
                        "promised date + delay drawn from the simulated world's true behaviour")
+# The baselines read from the LEARNING ranked table carry this suffix (--baseline-table).
+SAME_SUFFIX = "@LEARNING_TABLE"
+BASELINE_TABLES = ("rpt", "same", "both")
+CHEAPER_HEADER, SAME_HEADER = "GESIT cheaper in % of runs", "equal cost in % of runs"
+JUTA = 1_000_000
 
 
 class DeliveryWorld(Protocol):
@@ -123,6 +147,62 @@ class Case:
     prediction_model: str
     # Calibration rows: LIFNR, promised date, P_RPT, P_POST, P_USED (eval/ only).
     calibration: tuple[dict[str, Any], ...] = field(default=())
+    # The three baselines read from the LEARNING ranked table (--baseline-table same).
+    same_table: dict[str, Choice] = field(default_factory=dict)
+
+
+def all_choices(case: Case) -> dict[str, Choice]:
+    """Every order simulated for a case: the strategies, then the LEARNING-table baselines."""
+    return {**case.choices, **{name + SAME_SUFFIX: ch for name, ch in case.same_table.items()}}
+
+
+class DowntimeAdapter(CsvAdapter):
+    """The dataset with another downtime cost per day in the inventory row (eval only, for
+    the re-made decisions of the downtime sweep). Every other table is read unchanged."""
+
+    def __init__(self, data_dir: str | os.PathLike[str], downtime_cost_per_day: int) -> None:
+        super().__init__(data_dir)
+        self.downtime_cost_per_day = int(downtime_cost_per_day)
+
+    def inventory(self, matnr: str) -> dict[str, Any] | None:
+        row = super().inventory(matnr)
+        return None if row is None else {**row, "DOWNTIME_COST_PER_DAY": self.downtime_cost_per_day}
+
+
+def _rows_key(rows: list[Mapping[str, Any]]) -> str:
+    return hashlib.sha256(json.dumps(rows, sort_keys=True, default=str).encode()).hexdigest()
+
+
+class ReplayRpt:
+    """Wraps an RPT client. While recording it passes every call through (the main build
+    calls SAP-RPT exactly as without it) and keeps each answer by blend switch, context and
+    query rows; while replaying it answers a recorded query from the record and calls
+    SAP-RPT only for rows it has not seen. Errors are passed through and never recorded."""
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+        self.record: dict[tuple[str, str, str], dict[str, float]] = {}
+        self.replay = False
+        self.replayed = 0
+
+    @property
+    def model_id(self) -> str:
+        return self.inner.model_id
+
+    @property
+    def retries(self) -> list[str]:
+        return getattr(self.inner, "retries", [])
+
+    def predict_late(self, context_rows: list[Mapping[str, Any]],
+                     query_rows: list[Mapping[str, Any]]) -> dict[str, float]:
+        key = (os.environ.get("GESIT_RELIABILITY_BLEND", ""), _rows_key(context_rows),
+               _rows_key(query_rows))
+        if self.replay and key in self.record:
+            self.replayed += 1
+            return dict(self.record[key])
+        out = self.inner.predict_late(context_rows, query_rows)
+        self.record.setdefault(key, dict(out))
+        return out
 
 
 def load_world() -> DeliveryWorld:
@@ -187,8 +267,9 @@ def choices_for(table: dict[str, Any], gesit: str = GESIT_RPT_ONLY,
     return {name: _choice(name, row) for name, row in picked.items()}
 
 
-def scenario_of(ebeln: str, scenarios: list[dict[str, Any]]) -> str:
-    return next(s["id"].upper() for s in scenarios if s["ebeln"] == ebeln)
+def scenario_of(ebeln: str, scenarios: list[dict[str, Any]]) -> str | None:
+    """The scripted scenario of a PO, or None for a PO flagged without a scripted notice."""
+    return next((s["id"].upper() for s in scenarios if s["ebeln"] == ebeln), None)
 
 
 def _evaluate(adapter: CsvAdapter, rpt_client: RptClient) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -245,26 +326,46 @@ def build_cases(adapter: CsvAdapter | None = None,
     rpt_det, rpt_ev = runs["RPT_ONLY"]
     learn_det, learn_ev = runs["LEARNING"]
     learning = {c["EBELN"]: c for c in learn_ev["CASES"]}
-    cases = []
+    scenarios = adapter.scenarios()
+    cases, same_errors = [], []
     for case in rpt_ev["CASES"]:
+        scenario = scenario_of(case["EBELN"], scenarios)
+        if scenario is None:   # flagged without a scripted notice: it only takes capacity
+            continue
         table, other = case["SCORING"], learning[case["EBELN"]]
         choices = {**choices_for(table, GESIT_RPT_ONLY),
                    **choices_for(other["SCORING"], GESIT_LEARNING, with_baselines=False)}
+        try:
+            same = choices_for(other["SCORING"], GESIT_LEARNING)
+            same_table = {name: same[name] for name in BASELINES}
+        except ValueError as exc:   # only the LEARNING-table variant is undefined then
+            same_table = {}
+            same_errors.append(f"{scenario}: {exc}")
         cases.append(Case(
-            scenario=scenario_of(case["EBELN"], adapter.scenarios()), ebeln=case["EBELN"],
+            scenario=scenario, ebeln=case["EBELN"],
             qty=float(case["QTY"]), stockout=case["NEED_BY"],
             downtime_cost_per_day=int(table["DOWNTIME_COST_PER_DAY"]),
             choices={name: choices[name] for name in STRATEGIES},
             prediction_model=(f"RPT_ONLY {_model_text(table['PREDICTION'])}, LEARNING "
                               f"{_model_text(other['SCORING']['PREDICTION'])} + posterior"),
             calibration=calibration_rows(other, other["SCORING"], table, adapter,
-                                         learn_det["TODAY"])))
+                                         learn_det["TODAY"]),
+            same_table=same_table))
+    predictions = [det["PREDICTION"] for det, _ in runs.values()] + [
+        c["SCORING"]["PREDICTION"] for _, ev in runs.values() for c in ev["CASES"]]
     meta = {"DETECTION_MODEL": f"RPT_ONLY {_model_text(rpt_det['PREDICTION'])}, LEARNING "
                                f"{_model_text(learn_det['PREDICTION'])} + posterior",
             "BLEND_RULE": reliability.BLEND_RULE_TEXT,
             "EXCLUDE_FLAGGED_SUPPLIERS": rpt_ev["EXCLUDE_FLAGGED_SUPPLIERS"],
             "TODAY": rpt_det["TODAY"],
-            "DRIFT_HISTORY": drift_history(adapter, rpt_det["TODAY"])}
+            "DRIFT_HISTORY": drift_history(adapter, rpt_det["TODAY"]),
+            # Any SAP-RPT call of this build answered by the posterior fallback (FR-DET-4).
+            "FALLBACK": any(p["FALLBACK"] for p in predictions),
+            # Detection's urgency order per mode: scenario id, or "other PO <EBELN>".
+            "FLAGGED_ORDER": {mode: [scenario_of(po["EBELN"], scenarios)
+                                     or f"other PO {po['EBELN']}" for po in det["FLAGGED_POS"]]
+                              for mode, (det, _) in runs.items()},
+            "LEARNING_TABLE_ERRORS": same_errors}
     return cases, meta
 
 
@@ -310,14 +411,14 @@ def draw_delays(world: DeliveryWorld, keys: list[tuple[str, str]], seed: int,
 def simulate(cases: list[Case], world: DeliveryWorld, runs: int,
              seed: int) -> dict[str, dict[str, dict[str, np.ndarray]]]:
     """Per scenario and strategy: arrays of realised cost and stock-out days, one per run."""
-    keys = sorted({(p.lifnr, p.promised) for c in cases for ch in c.choices.values()
+    keys = sorted({(p.lifnr, p.promised) for c in cases for ch in all_choices(c).values()
                    for p in ch.parts})
     out = {c.scenario: {s: {"COST": np.zeros(runs), "OUT_DAYS": np.zeros(runs)}
-                        for s in c.choices} for c in cases}
+                        for s in all_choices(c)} for c in cases}
     for run in range(runs):
         delays = draw_delays(world, keys, seed, run)
         for case in cases:
-            for name, choice in case.choices.items():
+            for name, choice in all_choices(case).items():
                 days = realised_stockout_days(choice.parts, delays, case.stockout)
                 out[case.scenario][name]["OUT_DAYS"][run] = days
                 out[case.scenario][name]["COST"][run] = (choice.purchase_cost
@@ -328,8 +429,9 @@ def simulate(cases: list[Case], world: DeliveryWorld, runs: int,
 def with_total(results: dict[str, dict[str, dict[str, np.ndarray]]]) -> dict[str, Any]:
     """Add TOTAL: per run, the sum over the scenarios of cost and stock-out days."""
     names = list(results)
+    common = [s for s in results[names[0]] if all(s in results[n] for n in names)]
     total = {s: {k: sum(results[n][s][k] for n in names) for k in ("COST", "OUT_DAYS")}
-             for s in STRATEGIES}
+             for s in common}
     return {**results, "TOTAL": total}
 
 
@@ -345,23 +447,49 @@ def paired(a: np.ndarray, b: np.ndarray) -> dict[str, Any]:
 def summarise(series: dict[str, dict[str, np.ndarray]]) -> dict[str, Any]:
     """Statistics for one scenario: per strategy, and the paired comparisons."""
     per = {}
-    for name in STRATEGIES:
+    for name in series:
         cost, days = series[name]["COST"], series[name]["OUT_DAYS"]
         per[name] = {"MEAN_COST": float(cost.mean()), "P90_COST": float(np.percentile(cost, 90)),
                      "MEAN_OUT_DAYS": float(days.mean()), "P_ANY_OUT": float((days > 0).mean())}
     versus = {strategy: {other: paired(series[strategy]["COST"], series[other]["COST"])
                          for other in others}
               for strategy, others in COMPARISONS}
-    return {"STRATEGIES": per, "VERSUS": versus}
+    out = {"STRATEGIES": per, "VERSUS": versus,
+           # For --summary: each strategy minus GESIT_LEARNING (positive: it costs more).
+           "VS_GESIT_LEARNING": {s: paired(series[s]["COST"], series[GESIT_LEARNING]["COST"])
+                                 for s in STRATEGIES if s != GESIT_LEARNING}}
+    if all(b + SAME_SUFFIX in series for b in BASELINES):
+        out["VERSUS_LEARNING_TABLE"] = {GESIT_LEARNING: {
+            b: paired(series[GESIT_LEARNING]["COST"], series[b + SAME_SUFFIX]["COST"])
+            for b in BASELINES}}
+    return out
+
+
+def select_cases(cases: list[Case], scenario: str, baseline_table: str = "both") -> list[Case]:
+    """The cases of `scenario` ("all" or S1 to S3) in scenario order; with "rpt" the
+    LEARNING-table baselines are left out, so only the orders of before are simulated."""
+    wanted = SCENARIOS if scenario.upper() == "ALL" else (scenario.upper(),)
+    picked = sorted((c for c in cases if c.scenario in wanted), key=lambda c: c.scenario)
+    return [replace(c, same_table={}) for c in picked] if baseline_table == "rpt" else picked
 
 
 def run(scenario: str = "all", runs: int = 1000, seed: int = 42,
         adapter: CsvAdapter | None = None, rpt_client: RptClient | None = None,
-        world: DeliveryWorld | None = None) -> dict[str, Any]:
+        world: DeliveryWorld | None = None, baseline_table: str = "both") -> dict[str, Any]:
     """Build the cases once per mode, simulate, and summarise (the numbers of the tables)."""
-    cases, meta = build_cases(adapter, rpt_client)
-    wanted = SCENARIOS if scenario.upper() == "ALL" else (scenario.upper(),)
-    cases = sorted((c for c in cases if c.scenario in wanted), key=lambda c: c.scenario)
+    report, _, _ = run_detailed(scenario, runs, seed, adapter, rpt_client, world, baseline_table)
+    return report
+
+
+def run_detailed(scenario: str = "all", runs: int = 1000, seed: int = 42,
+                 adapter: CsvAdapter | None = None, rpt_client: Any = None,
+                 world: DeliveryWorld | None = None, baseline_table: str = "both",
+                 built: tuple[list[Case], dict[str, Any]] | None = None,
+                 ) -> tuple[dict[str, Any], list[Case], dict[str, Any]]:
+    """`run`, also returning the cases and the per-run arrays (for the downtime sweep).
+    `built` reuses cases already built for this dataset."""
+    cases, meta = built or build_cases(adapter, rpt_client)
+    cases = select_cases(cases, scenario, baseline_table)
     world = world or load_world()
     started = time.perf_counter()
     results = simulate(cases, world, runs, seed)
@@ -373,21 +501,160 @@ def run(scenario: str = "all", runs: int = 1000, seed: int = 42,
             truth = true_p_late(world, row["LIFNR"], row["PROMISED"])
             calibration.append({"SCENARIO": c.scenario, **row,
                                 "P_TRUE": None if truth is None else round(truth, 4)})
-    return {
+    def choice_rows(choices: dict[str, Choice]) -> dict[str, Any]:
+        return {n: {"LABEL": ch.label, "PURCHASE_COST": ch.purchase_cost,
+                    "PREDICTED_EXPECTED_COST": ch.predicted_cost} for n, ch in choices.items()}
+
+    report = {
         "DATA_NOTE": "simulated data", "SEED": seed, "RUNS": runs, **meta,
+        "BASELINE_TABLE": baseline_table,
         "LOOP_SECONDS": round(time.perf_counter() - started, 2),
         "STOCKOUT_DEFINITION": STOCKOUT_DEFINITION,
         "CALIBRATION": calibration,
         "CASES": {c.scenario: {"EBELN": c.ebeln, "QTY": c.qty, "STOCKOUT_DATE": c.stockout,
                                "DOWNTIME_COST_PER_DAY": c.downtime_cost_per_day,
                                "PREDICTION_MODEL": c.prediction_model,
-                               "CHOICES": {n: {"LABEL": ch.label,
-                                               "PURCHASE_COST": ch.purchase_cost,
-                                               "PREDICTED_EXPECTED_COST": ch.predicted_cost}
-                                           for n, ch in c.choices.items()}}
+                               "CHOICES": choice_rows(c.choices),
+                               "CHOICES_LEARNING_TABLE": choice_rows(c.same_table)}
                   for c in cases},
         "RESULTS": {name: summarise(series) for name, series in results.items()},
     }
+    return report, cases, results
+
+
+# ------------------------------------------------------------------ downtime cost sweep
+def sweep_fixed(cases: list[Case], results: dict[str, Any],
+                values: list[int]) -> list[dict[str, Any]]:
+    """Part (a): every strategy's order as decided at the dataset's downtime cost; realised
+    cost per run = purchase cost + realised stock-out days x each value in the sweep."""
+    rows = []
+    for value in values:
+        totals = {}
+        for s in STRATEGIES:
+            per_run = sum(c.choices[s].purchase_cost + results[c.scenario][s]["OUT_DAYS"] * value
+                          for c in cases)
+            totals[s] = float(per_run.mean())
+        rows.append({"DOWNTIME_COST_PER_DAY": value, "TOTAL_MEAN_COST": totals,
+                     "WINNER": winners(totals)})
+    return rows
+
+
+def winners(totals: dict[str, float]) -> list[str]:
+    """The strategies with the lowest mean cost (several on an exact tie)."""
+    low = min(totals.values())
+    return [s for s, v in totals.items() if v == low]
+
+
+def sweep_remade(data_dir: Path, rpt: ReplayRpt, world: DeliveryWorld, values: list[int],
+                 scenario: str, runs: int, seed: int) -> list[dict[str, Any]]:
+    """Part (b): the ranked tables rebuilt with each downtime cost (DowntimeAdapter, eval
+    only; scoring code unchanged), so every strategy's choice can change, then realised at
+    the same value with the same draws. SAP-RPT answers are replayed where the rows match
+    the main build, so the dataset's own value reproduces the main results."""
+    rpt.replay = True
+    rows = []
+    for value in values:
+        cases, meta = build_cases(DowntimeAdapter(data_dir, value), rpt)
+        cases = select_cases(cases, scenario, "rpt")
+        results = simulate(cases, world, runs, seed)
+        totals = {s: float(sum(results[c.scenario][s]["COST"] for c in cases).mean())
+                  for s in STRATEGIES}
+        rows.append({"DOWNTIME_COST_PER_DAY": value, "TOTAL_MEAN_COST": totals,
+                     "WINNER": winners(totals), "FALLBACK": meta["FALLBACK"],
+                     "CHOICES": {c.scenario: {s: c.choices[s].label for s in STRATEGIES}
+                                 for c in cases}})
+    return rows
+
+
+# ------------------------------------------------------------------ many worlds
+def derived_seed(seed: int, generator_seed: int) -> int:
+    """Simulation seed of an extra world, reproducible from --seed and its generator seed."""
+    return int(np.random.SeedSequence([seed, generator_seed]).generate_state(1)[0])
+
+
+def world_result(label: str, generator_seed: int, adapter: CsvAdapter, rpt_client: Any,
+                 world: DeliveryWorld, runs: int, seed: int, scenario: str,
+                 baseline_table: str,
+                 built: tuple[list[Case], dict[str, Any]] | None = None) -> dict[str, Any]:
+    """One world: build (retried once on a posterior fallback), simulate, summarise.
+    STATUS "ok" is used in the cross-world summary; "fallback" and "undefined" are not."""
+    started = time.perf_counter()
+    status, reason, report, attempts = "ok", None, None, 0
+    for attempts in (1, 2):
+        try:
+            report, _, _ = run_detailed(scenario, runs, seed, adapter, rpt_client, world,
+                                        baseline_table, built if attempts == 1 else None)
+        except ValueError as exc:   # a ranked table without a strategy's row
+            status, reason, report = "undefined", str(exc), None
+            break
+        if not report["FALLBACK"]:
+            break
+    wanted = SCENARIOS if scenario.upper() == "ALL" else (scenario.upper(),)
+    if report and report["FALLBACK"]:
+        status, reason = "fallback", "SAP-RPT fell back to the posterior, also after one retry"
+    elif report and tuple(report["CASES"]) != tuple(wanted):
+        status, reason = "undefined", f"cases found: {', '.join(report['CASES']) or 'none'}"
+    return {"WORLD": label, "GENERATOR_SEED": generator_seed, "SIM_SEED": seed,
+            "STATUS": status, "REASON": reason, "ATTEMPTS": attempts,
+            "SECONDS": round(time.perf_counter() - started, 1),
+            "FLAGGED_ORDER": report["FLAGGED_ORDER"] if report else None,
+            "CHOICES": ({s: {n: ch["LABEL"] for n, ch in c["CHOICES"].items()}
+                         for s, c in report["CASES"].items()} if report else None),
+            "RESULTS": report["RESULTS"] if report else None}
+
+
+def run_worlds(generator_seeds: tuple[int, ...], scenario: str, runs: int, seed: int,
+               baseline_table: str, tracked: dict[str, Any],
+               rpt_for: Callable[[str], Any], world: DeliveryWorld | None = None,
+               progress: Callable[[str], None] | None = None) -> list[dict[str, Any]]:
+    """The tracked world (already simulated, `tracked`) plus one generated world per seed."""
+    world = world or load_world()
+    say = progress or (lambda text: None)
+    out = [tracked]
+    total = len(generator_seeds) + 1
+    for n, generator_seed in enumerate(generator_seeds, 2):
+        label = f"seed {generator_seed}"
+        say(f"World {n} of {total} (generator seed {generator_seed}): generating and building ...")
+        started = time.perf_counter()
+        with world_gen.temporary_world(generator_seed) as folder:
+            result = world_result(label, generator_seed, CsvAdapter(folder), rpt_for(label),
+                                  world, runs, derived_seed(seed, generator_seed), scenario,
+                                  baseline_table)
+        result["SECONDS"] = round(time.perf_counter() - started, 1)
+        say(f"World {n} of {total}: {result['STATUS']}, {result['SECONDS']} s")
+        out.append(result)
+    return out
+
+
+def _stats(diffs: list[float]) -> dict[str, Any]:
+    return {"MEAN_DIFF": float(np.mean(diffs)) if diffs else None,
+            "CHEAPER_IN": sum(d < 0 for d in diffs), "EQUAL_IN": sum(d == 0 for d in diffs),
+            "OF": len(diffs), "MIN_DIFF": min(diffs) if diffs else None,
+            "MAX_DIFF": max(diffs) if diffs else None}
+
+
+def cross_world(worlds: list[dict[str, Any]]) -> dict[str, Any]:
+    """Over the worlds with STATUS ok: the mean of each strategy's total mean cost, and for
+    each GESIT strategy against each baseline the mean, the count of worlds where GESIT is
+    cheaper, and the smallest and largest difference (GESIT minus the other one)."""
+    used = [w for w in worlds if w["STATUS"] == "ok"]
+    key = lambda w: "TOTAL" if "TOTAL" in w["RESULTS"] else next(iter(w["RESULTS"]))
+    res = [w["RESULTS"][key(w)] for w in used]
+    out: dict[str, Any] = {
+        "WORLDS_USED": [w["WORLD"] for w in used],
+        "WORLDS_EXCLUDED": [{"WORLD": w["WORLD"], "STATUS": w["STATUS"], "REASON": w["REASON"]}
+                            for w in worlds if w["STATUS"] != "ok"],
+        "MEAN_TOTAL_COST": {s: (float(np.mean([r["STRATEGIES"][s]["MEAN_COST"] for r in res]))
+                                if res else None) for s in STRATEGIES},
+        "VERSUS": {g: {o: _stats([r["VERSUS"][g][o]["MEAN_DIFF"] for r in res]) for o in others}
+                   for g, others in COMPARISONS},
+    }
+    same = [r for r in res if "VERSUS_LEARNING_TABLE" in r]
+    if same:
+        out["VERSUS_LEARNING_TABLE"] = {GESIT_LEARNING: {
+            b: _stats([r["VERSUS_LEARNING_TABLE"][GESIT_LEARNING][b]["MEAN_DIFF"] for r in same])
+            for b in BASELINES}}
+    return out
 
 
 def _rp(x: float) -> str:
@@ -422,9 +689,33 @@ def format_calibration(report: dict[str, Any]) -> list[str]:
     return lines
 
 
-def format_report(report: dict[str, Any]) -> str:
+def _versus_header(strategy: str) -> str:
+    return (f"{strategy + ' vs':<20}{'MEAN DIFF':>16}{'95% INTERVAL':>40}"
+            f"{CHEAPER_HEADER:>28}{SAME_HEADER:>25}")
+
+
+def _versus_line(other: str, v: dict[str, Any]) -> str:
+    interval = f"[{_signed_rp(v['CI95'][0])}, {_signed_rp(v['CI95'][1])}]"
+    return (f"  {other:<18}{_signed_rp(v['MEAN_DIFF']):>16}{interval:>40}"
+            f"{v['SHARE_CHEAPER']:>28.1%}{v['SHARE_SAME']:>25.1%}")
+
+
+def limitations(report: dict[str, Any]) -> list[str]:
+    return [
+        "Limitations: the stock-out date is fixed at the one Detection computed on "
+        f"{report['TODAY']}; short shipments are not counted; there is one decision point "
+        f"({report['TODAY']}); extra worlds differ only by generator seed (the history, "
+        "quotes and spare capacity the agents see; the true supplier behaviour is the same "
+        "in every world); all data is simulated.",
+    ]
+
+
+def format_report(report: dict[str, Any], baseline_table: str = "rpt") -> str:
+    """The full tables. With "same" the GESIT_LEARNING comparisons against the RPT_ONLY
+    baselines are left out here (see `format_learning_table`)."""
     lines = [f"GESIT Monte Carlo against baselines ({report['DATA_NOTE']}), FR-EVA-4", ""]
     lines += format_calibration(report)
+    comparisons = COMPARISONS if baseline_table != "same" else COMPARISONS[:1]
     for name, res in report["RESULTS"].items():
         case = report["CASES"].get(name)
         lines.append("")
@@ -445,17 +736,17 @@ def format_report(report: dict[str, Any]) -> str:
             lines.append(f"{s:<17}{label:<36}{predicted:>15}{st['MEAN_COST']:>15,.0f}"
                          f"{st['P90_COST']:>15,.0f}{st['MEAN_OUT_DAYS']:>11.3f}"
                          f"{st['P_ANY_OUT']:>11.1%}")
-        for strategy, others in COMPARISONS:
-            lines.append(f"{strategy + ' vs':<20}{'MEAN DIFF':>16}{'95% INTERVAL':>40}"
-                         f"{'CHEAPER':>10}{'SAME':>8}")
+        for strategy, others in comparisons:
+            lines.append(_versus_header(strategy))
             for other in others:
-                v = res["VERSUS"][strategy][other]
-                interval = f"[{_signed_rp(v['CI95'][0])}, {_signed_rp(v['CI95'][1])}]"
-                lines.append(f"  {other:<18}{_signed_rp(v['MEAN_DIFF']):>16}{interval:>40}"
-                             f"{v['SHARE_CHEAPER']:>10.1%}{v['SHARE_SAME']:>8.1%}")
+                lines.append(_versus_line(other, res["VERSUS"][strategy][other]))
+    lines += ["", *format_footer(report)]
+    return "\n".join(lines)
+
+
+def format_footer(report: dict[str, Any]) -> list[str]:
     downtime = {c["DOWNTIME_COST_PER_DAY"] for c in report["CASES"].values()}
-    lines += [
-        "",
+    return [
         f"All figures are simulated data. Seed {report['SEED']}, {report['RUNS']:,} runs per "
         f"scenario and strategy, loop {report['LOOP_SECONDS']} s.",
         f"Predictions (made once per case and mode, before the loop): Detection "
@@ -470,28 +761,273 @@ def format_report(report: dict[str, Any]) -> str:
         f"days x {', '.join(_rp(d) for d in sorted(downtime))} per day of downtime.",
         "PREDICTED = the expected cost of that row in the strategy's own ranked table (FR-SEL-2). "
         "MEAN DIFF = the strategy minus the other one per run; negative means the strategy costs "
-        "less. CHEAPER and SAME = share of runs where it costs less, or the same.",
+        f"less. {CHEAPER_HEADER} and {SAME_HEADER} = share of runs where it costs less, or "
+        "the same.",
         f"EXCLUDE_FLAGGED_SUPPLIERS: {report['EXCLUDE_FLAGGED_SUPPLIERS']}.",
+        *limitations(report),
     ]
+
+
+def format_learning_table(report: dict[str, Any]) -> list[str]:
+    """--baseline-table same or both: GESIT_LEARNING against the baselines of its own table."""
+    lines = ["", "Baselines from the LEARNING ranked table (--baseline-table same, simulated data): "
+             "the cheapest, fastest and keep rows of the table GESIT_LEARNING decided from (the "
+             "same spare capacity and marks it saw). GESIT_RPT_ONLY keeps the RPT_ONLY baselines."]
+    if report.get("LEARNING_TABLE_ERRORS"):
+        return lines + [f"Not defined: {'; '.join(report['LEARNING_TABLE_ERRORS'])}"]
+    for name, res in report["RESULTS"].items():
+        if "VERSUS_LEARNING_TABLE" not in res:
+            continue
+        case = report["CASES"].get(name)
+        lines += ["", f"Scenario {name}, LEARNING table" if case
+                  else f"TOTAL over {', '.join(report['CASES'])}, LEARNING table",
+                  f"{'STRATEGY':<17}{'CHOICE':<36}{'MEAN Rp':>15}{'MEAN OUT d':>11}"
+                  f"{'P(any out)':>11}  RPT_ONLY TABLE"]
+        for s in (GESIT_LEARNING, *BASELINES):
+            key = s if s == GESIT_LEARNING else s + SAME_SUFFIX
+            st = res["STRATEGIES"][key]
+            label, note = "-", "-"
+            if case:
+                label = (case["CHOICES"] if s == GESIT_LEARNING
+                         else case["CHOICES_LEARNING_TABLE"])[s]["LABEL"]
+                note = ("-" if s == GESIT_LEARNING else "same order"
+                        if label == case["CHOICES"][s]["LABEL"] else "differs")
+            lines.append(f"{s:<17}{label:<36}{st['MEAN_COST']:>15,.0f}"
+                         f"{st['MEAN_OUT_DAYS']:>11.3f}{st['P_ANY_OUT']:>11.1%}  {note}")
+        lines.append(_versus_header(GESIT_LEARNING))
+        for other in BASELINES:
+            lines.append(_versus_line(other, res["VERSUS_LEARNING_TABLE"][GESIT_LEARNING][other]))
+    return lines
+
+
+def _juta(x: float | None) -> str:
+    return "n/a" if x is None else f"{x / JUTA:,.1f}"
+
+
+def _signed_juta(x: float) -> str:
+    return f"{x / JUTA:+,.1f}"
+
+
+def format_summary(report: dict[str, Any]) -> list[str]:
+    """--summary: the compact table per scenario and for the total (slide, demo step 3e)."""
+    lines = [f"GESIT Monte Carlo summary ({report['DATA_NOTE']}), FR-EVA-4: seed "
+             f"{report['SEED']}, {report['RUNS']:,} runs, costs in Rp juta (Rp1,000,000)"]
+    for name, res in report["RESULTS"].items():
+        lines += ["", f"{'Scenario ' + name if name != 'TOTAL' else 'TOTAL':<17}"
+                      f"{'MEAN':>10}{'MINUS GESIT_LEARNING [95% interval]':>40}{'P(any out)':>12}"]
+        for s in STRATEGIES:
+            st = res["STRATEGIES"][s]
+            if s == GESIT_LEARNING:
+                diff = "-"
+            else:
+                v = res["VS_GESIT_LEARNING"][s]
+                diff = (f"{_signed_juta(v['MEAN_DIFF'])} [{_signed_juta(v['CI95'][0])}, "
+                        f"{_signed_juta(v['CI95'][1])}]")
+            lines.append(f"{s:<17}{_juta(st['MEAN_COST']):>10}{diff:>40}{st['P_ANY_OUT']:>12.1%}")
+    lines += ["", "MINUS GESIT_LEARNING = the strategy's cost minus GESIT_LEARNING's in the same "
+              "run, mean and 95% interval; positive means the strategy costs more. Baselines from "
+              "the RPT_ONLY ranked table.", *format_footer(report)]
+    return lines
+
+
+def format_worlds(worlds: list[dict[str, Any]], cross: dict[str, Any]) -> list[str]:
+    """Per-world totals and the cross-world summary (Rp juta, simulated)."""
+    tracked = worlds[0]
+    base_order = (tracked["FLAGGED_ORDER"] or {}).get("RPT_ONLY")
+    norm = lambda order: [x if not x.startswith("other PO") else "other PO" for x in order or []]
+    short = {GESIT_RPT_ONLY: "RPT_ONLY", GESIT_LEARNING: "LEARNING", ALWAYS_CHEAPEST: "CHEAPEST",
+             ALWAYS_FASTEST: "FASTEST", KEEP_CURRENT_PO: "KEEP"}
+    lines = ["", f"Many worlds ({len(worlds)}, simulated data): total mean cost per world in Rp "
+             "juta, each world simulated with its own seed derived from --seed and the "
+             "generator seed (the tracked world uses --seed itself)",
+             f"{'WORLD':<18}{'STATUS':<10}" + "".join(f"{short[s]:>10}" for s in STRATEGIES)
+             + f"{'SECONDS':>9}  FLAGGED ORDER (Detection, RPT_ONLY / LEARNING)"]
+    for w in worlds:
+        key = None if not w["RESULTS"] else ("TOTAL" if "TOTAL" in w["RESULTS"]
+                                             else next(iter(w["RESULTS"])))
+        costs = "".join(f"{_juta(w['RESULTS'][key]['STRATEGIES'][s]['MEAN_COST']) if key else 'n/a':>10}"
+                        for s in STRATEGIES)
+        order = w["FLAGGED_ORDER"] or {}
+        flagged = " / ".join(", ".join(order.get(m) or []) for m in MODES) or "n/a"
+        lines.append(f"{w['WORLD']:<18}{w['STATUS']:<10}{costs}{w['SECONDS']:>9}  {flagged}")
+    for w in worlds[1:]:
+        order = w["FLAGGED_ORDER"] or {}
+        if any(norm(order.get(m)) != norm((tracked["FLAGGED_ORDER"] or {}).get(m)) for m in MODES):
+            lines.append(f"  {w['WORLD']}: Detection's flagged set or order differs from the "
+                         f"tracked world ({', '.join(base_order or [])}); this world's own list "
+                         "was used.")
+    excluded = cross["WORLDS_EXCLUDED"]
+    lines += ["", f"Cross-world summary over {len(cross['WORLDS_USED'])} of {len(worlds)} worlds "
+              f"({len(excluded)} excluded"
+              + "".join(f"; {e['WORLD']} {e['STATUS']}: {e['REASON']}" for e in excluded)
+              + "), simulated data, Rp juta",
+              "Mean over worlds of the total mean cost: "
+              + ", ".join(f"{s} {_juta(v)}" for s, v in cross["MEAN_TOTAL_COST"].items())]
+
+    def block(title: str, versus: dict[str, Any]) -> list[str]:
+        out = [title, f"{'':<20}{'vs':<18}{'MEAN DIFF':>11}{'GESIT CHEAPER IN':>19}"
+                      f"{'EQUAL IN':>10}{'SMALLEST DIFF':>15}{'LARGEST DIFF':>14}"]
+        for g, others in versus.items():
+            for o, st in others.items():
+                if st["OF"] == 0:
+                    out.append(f"{g:<20}{o:<18}{'n/a':>11}")
+                    continue
+                out.append(f"{g:<20}{o:<18}{_signed_juta(st['MEAN_DIFF']):>11}"
+                           f"{str(st['CHEAPER_IN']) + ' of ' + str(st['OF']) + ' worlds':>19}"
+                           f"{st['EQUAL_IN']:>10}"
+                           f"{_signed_juta(st['MIN_DIFF']):>15}{_signed_juta(st['MAX_DIFF']):>14}")
+        return out
+
+    lines += block("Baselines from the RPT_ONLY ranked table (difference = GESIT minus the other "
+                   "one, per world the mean over runs; negative: GESIT cheaper)", cross["VERSUS"])
+    if "VERSUS_LEARNING_TABLE" in cross:
+        lines += block("Baselines from the LEARNING ranked table (GESIT_LEARNING only)",
+                       cross["VERSUS_LEARNING_TABLE"])
+    return lines
+
+
+def format_sweep(fixed: list[dict[str, Any]], remade: list[dict[str, Any]] | None) -> list[str]:
+    short = {GESIT_RPT_ONLY: "RPT_ONLY", GESIT_LEARNING: "LEARNING", ALWAYS_CHEAPEST: "CHEAPEST",
+             ALWAYS_FASTEST: "FASTEST", KEEP_CURRENT_PO: "KEEP"}
+    head = (f"{'DOWNTIME Rp/day':>16}" + "".join(f"{short[s]:>10}" for s in STRATEGIES)
+            + "  LOWEST TOTAL MEAN COST")
+    lines = ["", "Downtime cost sensitivity, part (a): decisions fixed as made with the "
+             "dataset's downtime cost, realised cost recomputed at each value (total mean cost, "
+             "Rp juta, simulated data)", head]
+    for row in fixed:
+        lines.append(f"{row['DOWNTIME_COST_PER_DAY']:>16,}"
+                     + "".join(f"{_juta(row['TOTAL_MEAN_COST'][s]):>10}" for s in STRATEGIES)
+                     + "  " + ", ".join(row["WINNER"]))
+    if remade is None:
+        return lines
+    lines += ["", "Downtime cost sensitivity, part (b): decisions re-made (ranked tables rebuilt "
+              "with each value, eval-only override of the inventory row; scoring code unchanged), "
+              "realised with the same value (total mean cost, Rp juta, simulated data)", head]
+    for row in remade:
+        lines.append(f"{row['DOWNTIME_COST_PER_DAY']:>16,}"
+                     + "".join(f"{_juta(row['TOTAL_MEAN_COST'][s]):>10}" for s in STRATEGIES)
+                     + "  " + ", ".join(row["WINNER"])
+                     + ("  (SAP-RPT fallback in this build)" if row["FALLBACK"] else ""))
+    lines.append("Choices per case in part (b) (GESIT_LEARNING; RPT_ONLY / CHEAPEST / FASTEST):")
+    for row in remade:
+        for scenario, ch in row["CHOICES"].items():
+            lines.append(f"  {row['DOWNTIME_COST_PER_DAY']:>13,} {scenario}: {ch[GESIT_LEARNING]}; "
+                         f"{ch[GESIT_RPT_ONLY]} / {ch[ALWAYS_CHEAPEST]} / {ch[ALWAYS_FASTEST]}")
+    return lines
+
+
+def dataset_seed(data_dir: Path) -> int | None:
+    """Generator seed of a dataset folder (its meta.json), when it has one."""
+    meta = Path(data_dir) / "meta.json"
+    return int(json.loads(meta.read_text(encoding="utf-8"))["seed"]) if meta.exists() else None
+
+
+def evaluate(scenario: str = "all", runs: int = 1000, seed: int = 42,
+             baseline_table: str = "both", world_seeds: tuple[int, ...] = (),
+             downtime_values: list[int] | None = None, adapter: CsvAdapter | None = None,
+             rpt_client: Any = None, rpt_for: Callable[[str], Any] | None = None,
+             world: DeliveryWorld | None = None,
+             progress: Callable[[str], None] | None = None) -> dict[str, Any]:
+    """Everything the CLI prints, as one report: the main results on the tracked dataset,
+    then (when asked) the many-worlds run and the downtime cost sweep."""
+    started = time.perf_counter()
+    adapter = adapter or default_adapter()
+    inner = rpt_client or RptClient()
+    rpt = ReplayRpt(inner) if downtime_values else inner
+    world = world or load_world()
+    built = build_cases(adapter, rpt)
+    report, cases, results = run_detailed(scenario, runs, seed, adapter, rpt, world,
+                                          baseline_table, built)
+    out: dict[str, Any] = {
+        "simulated": True,
+        "SETTINGS": {"SCENARIO": scenario, "RUNS": runs, "SEED": seed,
+                     "BASELINE_TABLE": baseline_table, "WORLDS_GENERATOR_SEEDS": list(world_seeds),
+                     "TRACKED_GENERATOR_SEED": dataset_seed(adapter.data_dir),
+                     "DOWNTIME_SWEEP": list(downtime_values or []),
+                     "BLEND_WEIGHT_RPT": reliability.BLEND_WEIGHT_RPT},
+        **report}
+    if world_seeds:
+        tracked_label = f"tracked (seed {dataset_seed(adapter.data_dir)})"
+        tracked = world_result(tracked_label, dataset_seed(adapter.data_dir) or 0, adapter, rpt,
+                               world, runs, seed, scenario, baseline_table, built)
+        tracked["SECONDS"] = round(time.perf_counter() - started, 1)   # its build included
+        if progress:
+            progress(f"World 1 of {len(world_seeds) + 1} ({tracked_label}): {tracked['STATUS']}")
+        out["WORLDS"] = run_worlds(tuple(world_seeds), scenario, runs, seed, baseline_table,
+                                   tracked, rpt_for or (lambda label: inner), world, progress)
+        out["CROSS_WORLD"] = cross_world(out["WORLDS"])
+    if downtime_values:
+        out["SENSITIVITY"] = {
+            "DATASET_DOWNTIME_COST_PER_DAY": sorted({c.downtime_cost_per_day for c in cases}),
+            "DECISIONS_FIXED": sweep_fixed(cases, results, downtime_values),
+            "DECISIONS_REMADE": sweep_remade(adapter.data_dir, rpt, world, downtime_values,
+                                             scenario, runs, seed),
+            "SAP_RPT_ANSWERS_REPLAYED": rpt.replayed}
+    out["TOTAL_SECONDS"] = round(time.perf_counter() - started, 1)
+    return out
+
+
+def format_all(out: dict[str, Any], summary: bool = False) -> str:
+    baseline_table = out["SETTINGS"]["BASELINE_TABLE"]
+    lines = format_summary(out) if summary else [format_report(out, baseline_table)]
+    if baseline_table in ("same", "both"):
+        lines += format_learning_table(out)
+    if "WORLDS" in out:
+        lines += format_worlds(out["WORLDS"], out["CROSS_WORLD"])
+    if "SENSITIVITY" in out:
+        s = out["SENSITIVITY"]
+        lines += format_sweep(s["DECISIONS_FIXED"], s["DECISIONS_REMADE"])
+    if "WORLDS" in out or "SENSITIVITY" in out:
+        lines += ["", f"Whole run {out['TOTAL_SECONDS']} s. All figures are simulated data."]
     return "\n".join(lines)
+
+
+def write_json(out: dict[str, Any], path: str) -> None:
+    """--json: never into the tracked dataset folder."""
+    target = Path(path).resolve()
+    tracked = world_gen.TRACKED_OUT.resolve()
+    if target == tracked or tracked in target.parents:
+        raise SystemExit("--json: do not write into data_gen/out (tracked data)")
+    target.write_text(json.dumps(out, indent=2), encoding="utf-8")
+
+
+def _int_list(text: str) -> list[int]:
+    return [int(x) for x in text.replace(" ", "").split(",") if x]
+
+
+def _world_seeds(text: str) -> tuple[int, ...]:
+    if text.strip().lower() == "predeclared":
+        return world_gen.PREDECLARED_SEEDS
+    return tuple(_int_list(text))
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Monte Carlo of GESIT against baselines (FR-EVA-4).")
     parser.add_argument("--scenario", default="all", choices=["S1", "S2", "S3", "all"])
-    parser.add_argument("--runs", type=int, default=1000)
+    parser.add_argument("--runs", type=int, default=1000, help="runs per world (default 1000)")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--json", metavar="PATH", help="also write the numbers as JSON to PATH")
+    parser.add_argument("--json", metavar="PATH", help="also write every number as JSON to PATH")
+    parser.add_argument("--worlds", type=_world_seeds, default=(), metavar="LIST",
+                        help="extra worlds: comma-separated generator seeds, or 'predeclared' "
+                             f"({','.join(map(str, world_gen.PREDECLARED_SEEDS))}); the tracked "
+                             "dataset is always the first world")
+    parser.add_argument("--downtime-sweep", type=_int_list, default=None, metavar="LIST",
+                        help="downtime costs per day in Rp, comma-separated")
+    parser.add_argument("--baseline-table", choices=BASELINE_TABLES, default="both")
+    parser.add_argument("--summary", action="store_true",
+                        help="compact tables instead of the full ones")
     args = parser.parse_args(argv)
     try:   # SAP-RPT credentials for the predictions, from .env (NFR-4)
         from dotenv import load_dotenv
         load_dotenv()
     except ImportError:
         pass
-    report = run(args.scenario, args.runs, args.seed)
-    print(format_report(report))
+    progress = lambda text: print(text, file=sys.stderr, flush=True)
+    out = evaluate(args.scenario, args.runs, args.seed, args.baseline_table, args.worlds,
+                   args.downtime_sweep, progress=progress)
+    print(format_all(out, args.summary))
     if args.json:
-        Path(args.json).write_text(json.dumps(report, indent=2), encoding="utf-8")
+        write_json(out, args.json)
     return 0
 
 
