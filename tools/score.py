@@ -11,7 +11,7 @@ from typing import Any, Iterable, Mapping
 from adapters import CsvAdapter, default_adapter
 from integrations.sap.rpt_client import RptClient
 from scoring import rpt_features, supplier_score
-from scoring.reliability import BLEND_RULE_TEXT, posterior
+from scoring.reliability import BLEND_RULE_TEXT, posterior_before
 from tools.predict import predict_delay_risk
 from tools.read_tools import get_inventory, get_market_price, get_quotes
 
@@ -76,7 +76,7 @@ def score_suppliers(matnr: str, qty: float, need_by: str, exclude_lifnr: Iterabl
         receipts.setdefault(lifnr, adapter.receipts(lifnr))
         own = current_po.get("P_LATE")
         current = {**current_po, "P_LATE": own if own is not None
-                   else posterior(r["LATE"] for r in receipts[lifnr]).p_late}
+                   else posterior_before(receipts[lifnr], today).p_late}   # FR-EVA-2
         keep_d_late = delay_when_late({lifnr: receipts[lifnr]}, adapter)[lifnr]
         keep = supplier_score.keep_row(current, qty, keep_d_late, today, need_by, downtime)
     d_late = delay_when_late({k: receipts[k] for k in candidates}, adapter)

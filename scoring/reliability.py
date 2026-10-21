@@ -18,12 +18,11 @@ FORGETTING_FACTOR = 0.97
 INTERVAL_MASS = 0.90
 
 # The delay risk GESIT uses is a fixed 50:50 blend of SAP-RPT and this posterior (team
-# decision, 20 Oct 2026, not yet in the PRD; fixed, not tuned). `blend` is the only place
+# decision, 20 Oct 2026, in the PRD since 21 Oct: FR-DET-4, FR-EVA-2; fixed, not tuned). `blend` is the only place
 # the two are combined; BLEND_RULE_TEXT is the only place the rule is worded for a report.
 BLEND_WEIGHT_RPT = 0.5
 BLEND_RULE_TEXT = (f"P(late) = {BLEND_WEIGHT_RPT:g} x SAP-RPT + {1 - BLEND_WEIGHT_RPT:g} x "
-                   f"reliability posterior (Beta, forgetting {FORGETTING_FACTOR:g} per receipt) "
-                   "(proposed rule)")
+                   f"reliability posterior (Beta, forgetting {FORGETTING_FACTOR:g} per receipt)")
 
 
 @dataclass(frozen=True)
@@ -78,7 +77,8 @@ def posterior(late_flags: Iterable[bool | int], forgetting: float = FORGETTING_F
 
 def posterior_before(receipts: Iterable[Mapping[str, Any]], today: str) -> Reliability:
     """Posterior from the goods receipts dated before `today` (BUDAT < today), oldest first.
-    A receipt on or after the scenario date is never known when the decision is made."""
+    A receipt on or after the scenario date is never known when the decision is made.
+    Every posterior a tool reports or uses goes through here (FR-EVA-2, FR-DET-4)."""
     return posterior(r["LATE"] for r in receipts if r["BUDAT"] < today)
 
 

@@ -9,7 +9,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from adapters import CsvAdapter, default_adapter
-from scoring.reliability import posterior
+from scoring.reliability import posterior_before
 
 
 def get_open_pos(matnr: str | None = None, adapter: CsvAdapter | None = None) -> list[dict[str, Any]]:
@@ -29,22 +29,29 @@ def get_inventory(matnr: str, adapter: CsvAdapter | None = None) -> dict[str, An
 
 def get_supplier_history(lifnr: str, days: int = 180, today: str | None = None,
                          adapter: CsvAdapter | None = None) -> dict[str, Any]:
-    """Receipts with delay in the last `days`, plus the reliability posterior (FR-EVA-3).
+    """Receipts with delay in the last `days` before `today`, plus the reliability posterior
+    (FR-EVA-3).
 
-    The posterior uses every receipt of the supplier, oldest first; `days` only
-    limits the receipts that are listed.
+    `today` is the decision date (default: the scenario date, `decision_date`). The posterior
+    uses every receipt dated before it, oldest first (FR-EVA-2); `days` only limits the
+    receipts that are listed.
     """
     adapter = adapter or default_adapter()
     receipts = adapter.receipts(lifnr)
-    if today is None:
-        today = max((r["BUDAT"] for r in adapter.receipts()), default=date.today().isoformat())
+    today = today or decision_date(adapter)
     cutoff = (date.fromisoformat(today) - timedelta(days=days)).isoformat()
     return {
         "LIFNR": lifnr,
         "DAYS": days,
-        "RECEIPTS": [r for r in receipts if r["BUDAT"] >= cutoff],
-        "RELIABILITY": posterior(r["LATE"] for r in receipts).as_dict(),
+        "RECEIPTS": [r for r in receipts if cutoff <= r["BUDAT"] < today],
+        "RELIABILITY": posterior_before(receipts, today).as_dict(),
     }
+
+
+def decision_date(adapter: CsvAdapter) -> str:
+    """The scenario date ("today"): the latest stock date in inventory_asof."""
+    dates = [str(r["DATE"]) for r in adapter.table("inventory_asof")]
+    return max(dates, default=date.today().isoformat())
 
 
 def get_quotes(matnr: str, adapter: CsvAdapter | None = None) -> list[dict[str, Any]]:

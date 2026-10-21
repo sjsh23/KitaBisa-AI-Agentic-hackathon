@@ -3,12 +3,14 @@
 When SAP-RPT is unavailable the tool falls back to each supplier's reliability
 posterior and says so in the output (FR-DET-4).
 
-Reliability blend (team decision, 20 Oct 2026, proposed for the PRD): with the switch
+Reliability blend (team decision, 20 Oct 2026, in the PRD since 21 Oct): with the switch
 GESIT_RELIABILITY_BLEND on (the default), each row also gets P_RPT (SAP-RPT), P_POST (the
 supplier's reliability posterior from its goods receipts before `today`, FR-EVA-2) and
 P_USED = `scoring.reliability.blend` of the two, or P_POST alone when SAP-RPT is
 unavailable. P_LATE is then P_USED, so Detection and Supplier Evaluation use it without
-any change to their formulas. With the switch off the tool behaves exactly as before.
+any change to their formulas. With the switch off P(late) is SAP-RPT alone, or the
+posterior alone when SAP-RPT is unavailable. Every posterior uses only goods receipts
+before `today` (`scoring.reliability.posterior_before`, FR-EVA-2).
 """
 from __future__ import annotations
 
@@ -17,7 +19,7 @@ from typing import Any, Mapping
 
 from adapters import CsvAdapter, default_adapter
 from integrations.sap.rpt_client import RptClient, RptUnavailable
-from scoring.reliability import BLEND_WEIGHT_RPT, blend, posterior, posterior_before
+from scoring.reliability import BLEND_WEIGHT_RPT, blend, posterior_before
 
 # Labelled history sent to SAP-RPT as context. `holdout_recent` is left out: late
 # POs from those weeks are still open, so that set looks better than reality.
@@ -57,8 +59,9 @@ def predict_delay_risk(rows: list[dict[str, Any]], adapter: CsvAdapter | None = 
         p_rpt = None
         model_id, fallback, reason = FALLBACK_MODEL_ID, True, str(exc)
 
-    if not use_blend:   # the behaviour before the blend, unchanged
-        p_late = p_rpt if p_rpt is not None else _posterior_p_late(rows, adapter)
+    if not use_blend:   # SAP-RPT alone (the switch off), the posterior when it is unavailable
+        p_late = p_rpt if p_rpt is not None else _posterior_p_late(
+            rows, adapter, today or _default_today(rows, adapter))
         predictions = [{"EBELN": str(r["EBELN"]), "EBELP": r.get("EBELP"), "LIFNR": str(r["LIFNR"]),
                         "P_LATE": round(p_late[str(r["EBELN"])], 4)} for r in rows]
     else:
@@ -90,16 +93,12 @@ def predict_delay_risk(rows: list[dict[str, Any]], adapter: CsvAdapter | None = 
     return out
 
 
-def _posterior_p_late(rows: list[dict[str, Any]], adapter: CsvAdapter) -> dict[str, float]:
-    """FR-DET-4: posterior mean of P(late) per row, from the supplier's receipts."""
-    by_supplier: dict[str, float] = {}
-    result = {}
-    for row in rows:
-        lifnr = str(row["LIFNR"])
-        if lifnr not in by_supplier:
-            by_supplier[lifnr] = posterior(r["LATE"] for r in adapter.receipts(lifnr)).p_late
-        result[str(row["EBELN"])] = by_supplier[lifnr]
-    return result
+def _posterior_p_late(rows: list[dict[str, Any]], adapter: CsvAdapter,
+                      today: str) -> dict[str, float]:
+    """FR-DET-4: posterior mean of P(late) per row, from the supplier's receipts before
+    `today` (FR-EVA-2)."""
+    p_post = _posterior_before_today(rows, adapter, today)
+    return {str(row["EBELN"]): p_post[str(row["LIFNR"])] for row in rows}
 
 
 def _posterior_before_today(rows: list[dict[str, Any]], adapter: CsvAdapter,

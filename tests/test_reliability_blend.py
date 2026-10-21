@@ -1,4 +1,4 @@
-"""Reliability blend of the delay risk (FR-DET-4, FR-EVA-2; team decision, proposed rule):
+"""Reliability blend of the delay risk (FR-DET-4, FR-EVA-2; team decision, in the PRD since 21 Oct):
 P_USED = 0.5 x SAP-RPT + 0.5 x Beta posterior from receipts before today. No network."""
 import pytest
 
@@ -64,7 +64,7 @@ def test_blend_arithmetic_and_rule_text():
     assert reliability.blend(None, 0.4) == 0.4            # SAP-RPT unavailable: posterior alone
     assert reliability.BLEND_RULE_TEXT == (
         "P(late) = 0.5 x SAP-RPT + 0.5 x reliability posterior (Beta, forgetting 0.97 per "
-        "receipt) (proposed rule)")
+        "receipt)")
     # The PRD parameters are unchanged: prior Beta(2, 1), forgetting 0.97 per receipt.
     assert (reliability.PRIOR_ALPHA, reliability.PRIOR_BETA, reliability.FORGETTING_FACTOR) == (
         2.0, 1.0, 0.97)
@@ -126,8 +126,11 @@ def test_switch_off_is_the_old_tool(adapter):
     assert out["predictions"] == [{"EBELN": "CAND-X", "EBELP": 10, "LIFNR": "100108",
                                    "P_LATE": 0.2}]
     fallback = predict_delay_risk([row("100108")], adapter, StubRpt(None), use_blend=False)
+    # Since 21 Oct the fallback posterior also uses only receipts before today (FR-EVA-2);
+    # on the tracked data every receipt is before 2026-09-30, so the value is unchanged.
     every = reliability.posterior(r["LATE"] for r in adapter.receipts("100108")).p_late
-    assert fallback["predictions"][0]["P_LATE"] == round(every, 4)
+    before = reliability.posterior_before(adapter.receipts("100108"), TODAY).p_late
+    assert fallback["predictions"][0]["P_LATE"] == round(before, 4) == round(every, 4)
 
 
 # ------------------------------------------------------------------ downstream
@@ -177,3 +180,53 @@ def test_sources_line_names_the_three_numbers(adapter, monkeypatch):
     line = next(l for l in format_case(s1) if l.startswith("P(late) sources: "))
     assert line.startswith(f"P(late) sources: 100109 SAP-RPT 0.20, posterior "
                            f"{src['P_POST']:.2f}, used {src['P_USED']:.2f}")
+
+
+# ------------------------------------------------------------------ decision-date cut-off
+# FR-EVA-2, FR-DET-4: every posterior path uses only goods receipts dated before the
+# decision date: get_supplier_history, the SAP-RPT-only fallback and the keep row without
+# a P(late). One helper does it (scoring.reliability.posterior_before).
+EARLIER = "2026-03-01"
+AFTER_TODAY = {"EBELN": "9", "EBELP": 10, "LIFNR": "100108", "EINDT": "2026-09-25",
+               "BUDAT": "2026-10-02", "MENGE": 1.0, "DELAY_DAYS": 7, "LATE": 1}
+
+
+def three_paths(adapter, today):
+    """The posterior P(late) of 100108 from each of the three paths, at `today`."""
+    from tools.read_tools import get_supplier_history
+    from tools.score import score_suppliers
+    history = get_supplier_history("100108", today=today, adapter=adapter)["RELIABILITY"]
+    fallback = predict_delay_risk([row("100108")], adapter, StubRpt(None), today=today,
+                                  use_blend=False)["predictions"][0]["P_LATE"]
+    keep = score_suppliers(MATNR, 1000.0, "2026-10-06", today=today, adapter=adapter,
+                           client=StubRpt(0.2),
+                           current_po={"EBELN": "4500000431", "LIFNR": "100108",
+                                       "NETPR": 17000, "ARRIVAL": "2026-10-04",
+                                       "P_LATE": None})["KEEP"]["P_LATE"]
+    return history["P_LATE"], fallback, keep
+
+
+def test_receipt_after_today_changes_none_of_the_three_paths(adapter):
+    extra = ExtraReceipts([AFTER_TODAY])
+    assert three_paths(extra, TODAY) == three_paths(adapter, TODAY)
+    # Without `today`, get_supplier_history uses the scenario date (inventory_asof DATE).
+    from tools.read_tools import decision_date, get_supplier_history
+    assert decision_date(adapter) == TODAY
+    assert (get_supplier_history("100108", adapter=extra)["RELIABILITY"]
+            == get_supplier_history("100108", adapter=adapter)["RELIABILITY"])
+    assert all(r["BUDAT"] < TODAY
+               for r in get_supplier_history("100108", adapter=extra)["RECEIPTS"])
+    # The fallback without `today` takes the scenario date from the row's material.
+    no_today = predict_delay_risk([row("100108")], extra, StubRpt(None), use_blend=False)
+    assert no_today["predictions"][0]["P_LATE"] == three_paths(adapter, TODAY)[1]
+
+
+def test_earlier_today_gives_the_posterior_of_the_earlier_receipts(adapter):
+    expected = reliability.posterior_before(adapter.receipts("100108"), EARLIER).p_late
+    now = reliability.posterior_before(adapter.receipts("100108"), TODAY).p_late
+    assert expected != pytest.approx(now)            # 100108 drifted after 1 Mar 2026
+    history, fallback, keep = three_paths(adapter, EARLIER)
+    assert history == round(expected, 4)
+    assert fallback == round(expected, 4)
+    assert keep == pytest.approx(expected, abs=5e-5)   # the keep row rounds to 4 places
+    assert three_paths(adapter, TODAY)[0] == round(now, 4)
