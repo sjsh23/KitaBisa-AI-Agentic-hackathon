@@ -68,7 +68,7 @@ git diff --cached --name-only
 py -3.11 -m pytest -q
 ```
 
-Expected: `223 passed` (20 October 2026). The tests never call the network: SAP-RPT, SAP AI Core and the reasoning models are replaced by fakes.
+Expected: `250 passed` (21 October 2026). The tests never call the network: SAP-RPT, SAP AI Core and the reasoning models are replaced by fakes.
 
 | Test file | What it proves | Requirements |
 |---|---|---|
@@ -83,6 +83,7 @@ Expected: `223 passed` (20 October 2026). The tests never call the network: SAP-
 | `tests/test_supplier_evaluation_agent.py` | Candidates and exclusions per scenario, the EXCLUDE_FLAGGED_SUPPLIERS switch, replacement quantity, no row above its spare capacity, capacity reserved across cases, facts as phrases, the reason vs the cheapest in S1 to S3 and the check failing without it, masking check blocks the call, survival without the LLM, CLI | FR-SEL-1 to FR-SEL-4, PRD section 10 |
 | `tests/test_integrity.py` | Only BUYER03 with 100107 flagged on the simulated EKKO (40 pairs tested); k = 4, ratio 1.9 and p >= 0.01 not flagged; share_others = 0 does not crash; binomial tail equals scipy; justification 19 characters rejected, 20 accepted, 25 spaces rejected; same choice writes nothing; one log line with every field; cost difference chosen minus recommended; overriding a keep recommendation; the Action agent drafts a choice only with an override id; neutral wording; the three CLI paths. Uses a temp DECISION_LOG_PATH | FR-INT-1 to FR-INT-4, D-3 |
 | `tests/test_monte_carlo.py` | The four strategies match the real recommendation (SAP-RPT replayed from a recorded run); SAP-RPT called once per case and never in the loop, no LLM call; same seed same result, other seed differs; an on-time world costs only the purchase; common random numbers; quantity-weighted stock-out for a split; a case without a fastest row stops; footer text; nothing outside `eval/` uses `data_gen/world.py`, `_truth/` or `eval` | FR-EVA-4, D-1, D-3 |
+| `tests/test_monte_carlo_robustness.py` | Default output unchanged against a frozen copy (`tests/monte_carlo_default_before.txt`) except the renamed headers and footer; two generated worlds: SAP-RPT once per world, case and mode, temporary folders deleted, `data_gen/out` hashes unchanged, a fallback world excluded from the cross-world summary; JSON has `simulated` and the cross-world summary; downtime sweep at Rp150,000,000 equals the main results (decisions fixed and re-made), a higher value raises only strategies with stock-out days; `--baseline-table rpt` gives the old numbers, `same` differs only where the LEARNING table differs; summary table; nothing outside `eval/` imports `eval` | FR-EVA-4, D-1, D-3 |
 
 To run one file or one test:
 
@@ -282,16 +283,44 @@ as it is; nothing is tuned to favour GESIT.
 
 What to check:
 
-- each scenario table has the four strategies, then "GESIT vs" with MEAN DIFF (GESIT minus the
-  baseline; negative means GESIT costs less), a 95% interval, GESIT CHEAPER and SAME,
-- strategies that order the same thing have identical numbers and SAME 100.0% (S1 GESIT and
-  ALWAYS_FASTEST, S2 GESIT and KEEP_CURRENT_PO),
+- each scenario table has the strategies, then "GESIT vs" with MEAN DIFF (GESIT minus the
+  baseline; negative means GESIT costs less), a 95% interval, "GESIT cheaper in % of runs"
+  and "equal cost in % of runs" (until 21 Oct: CHEAPER and SAME),
+- strategies that order the same thing have identical numbers and "equal cost" 100.0% (S1 GESIT
+  and ALWAYS_FASTEST, S2 GESIT and KEEP_CURRENT_PO),
+- the footer ends with the limitations (stock-out date fixed at Detection, short shipments not
+  counted, one decision point, worlds differ only by generator seed, all data simulated),
+- with the default `--baseline-table both` a second block follows the footer: GESIT_LEARNING
+  against the baselines of its own LEARNING ranked table ("same order" or "differs" per row);
+  `--baseline-table rpt` leaves it out,
 - the footer says "simulated data", the seed and runs, the delay model used for the
   predictions, "No SAP-RPT or LLM call inside the loop", the quantity-weighted stock-out
   definition and Rp150,000,000 per day of downtime,
 - the same command twice gives the same output; another `--seed` changes the numbers but,
   on 20 October 2026, not the ranking of the strategies,
 - a run takes about 16 s, almost all of it the SAP-RPT predictions; the loop is under 1 s.
+
+Robustness options (21 Oct 2026, FR-EVA-4, D-1, D-3; all numbers simulated):
+
+```powershell
+# the tracked dataset plus the pre-declared generator seeds 1 to 10 (about 6 minutes, real SAP-RPT)
+py -3.11 -m eval.monte_carlo --scenario all --worlds 1,2,3,4,5,6,7,8,9,10 --runs 1000 --seed 42 --summary --json "$env:TEMP\mc_worlds.json"
+# downtime cost sensitivity: (a) decisions fixed, (b) decisions re-made
+py -3.11 -m eval.monte_carlo --scenario all --runs 1000 --seed 42 --downtime-sweep 50000000,100000000,150000000,300000000
+```
+
+- `--worlds` (`predeclared` = 1 to 10) generates each extra world into a temporary folder with
+  the same generator and scenarios, deletes it afterwards and never writes `data_gen/out`.
+  Progress per world goes to stderr. A world whose SAP-RPT fell back to the posterior (after
+  one retry) is marked `fallback` and left out of the cross-world summary; the output says how
+  many worlds were left out and lists flagged orders that differ from the tracked world.
+- `--downtime-sweep` part (b) overrides the inventory row's downtime cost in `eval/` only
+  (`DowntimeAdapter`) and replays the SAP-RPT answers of the main build where the rows match;
+  at Rp150,000,000 both parts equal the main results.
+- `--summary` prints the compact table per scenario and the total (mean in Rp juta, minus
+  GESIT_LEARNING with a 95% interval, P(any stock-out)).
+- No chart option: matplotlib is not a dependency of the project.
+- Tests: `tests/test_monte_carlo_robustness.py` (14 tests; generates two small worlds, about 6 s).
 
 ## Step 5: SAP-RPT-1.6 alone (network)
 

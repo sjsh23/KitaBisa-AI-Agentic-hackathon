@@ -6,7 +6,7 @@ Agentic AI Hackathon 2026, Track A: Intelligent Supply Chain (Sokrates with AWS,
 | | |
 |---|---|
 | Status | Building toward Final/Demo Day, **Saturday 31 October 2026** (in person, 15 min incl. Q&A, **English**) |
-| Last updated | 20 October 2026 |
+| Last updated | 21 October 2026 |
 | Feature freeze | 25 October 2026 |
 | Source documents | Accepted proposal, finalist work plan (feedback), participant briefing deck |
 
@@ -29,7 +29,7 @@ Figures used in the proposal (cite them as such in the deck): direct procurement
 2. **Decide**: rank backup suppliers by expected total cost (price plus the cost of downtime risk) and explain the trade-off in plain English.
 3. **Act** with guardrails: draft the replacement PO; anything above the approval threshold or off the approved panel is blocked by policy and routed to a manager.
 4. **Guard integrity**: when a buyer overrides the recommendation, require a written justification, log it and flag suspicious buyer and supplier patterns.
-5. **Learn and prove value**: update supplier reliability after each goods receipt, and show with simulation that GESIT beats "always cheapest" and "always fastest".
+5. **Learn and prove value**: update supplier reliability after each goods receipt, and test with simulation how GESIT compares with "always cheapest" and "always fastest".
 
 ### Non-goals (do not build these)
 - A live connection to a real S/4HANA or Ariba system. The public S/4HANA Cloud sandbox has returned HTTP 401 since about 1 Sep 2026. Data is S/4-shaped and sits behind an adapter instead.
@@ -50,7 +50,7 @@ Figures used in the proposal (cite them as such in the deck): direct procurement
 
 | Criterion | Weight | GESIT answer |
 |---|---|---|
-| Innovation & Originality | 25% | Integrity Guard; predictive detection with SAP-RPT; risk-priced supplier choice proven against baselines |
+| Innovation & Originality | 25% | Integrity Guard; predictive detection with SAP-RPT; risk-priced supplier choice tested against baselines in simulation |
 | Working Solution & Demo | 20% | Live end-to-end run on 3 scenarios, backup video ready |
 | Technical Execution & AWS/SAP | 20% | Strands on AgentCore Runtime, Gateway (MCP), Policy (Cedar), Memory, Observability; SAP-RPT on AI Core; Gen AI Hub with masking and grounding; Joule as the user interface |
 | Problem-Solution Fit & Impact | 20% | Response time hours to minutes; cost vs baselines from Monte Carlo |
@@ -154,13 +154,13 @@ IDs are referenced in code comments, tests and commits.
 - **FR-DET-1** For every open PO, call `predict_delay_risk` (SAP-RPT) with the PO's feature row and context rows from history; return P(late).
 - **FR-DET-2** Flag a PO when any of: P(late) >= 0.5; a supplier delay notice; a price revision > 3% over the PO price; a capacity shortfall notice. Every open PO is checked against every notice on file, whatever the trigger.
 - **FR-DET-3** For each flag compute stock-out date = today + days of cover, and the gap between the (new) expected arrival and the stock-out date.
-- **FR-DET-4** If SAP-RPT is unavailable, fall back to the supplier's reliability posterior (FR-EVA-3) and say so in the output.
+- **FR-DET-4** If SAP-RPT is unavailable, fall back to the supplier's reliability posterior (FR-EVA-3) and say so in the output. The delay risk used by every agent (computed in Detection and Supplier Evaluation, passed on to the later steps) is 0.5 x the SAP-RPT P(late) + 0.5 x the supplier's reliability posterior mean (FR-EVA-2, goods receipts dated before the decision date only). When SAP-RPT is unavailable the posterior alone is used and the fallback flag is set.
 
 ### 7.3 Supplier Evaluation (FR-SEL)
 - **FR-SEL-1** Candidates = approved-panel suppliers with a valid quote for the material. Keeping the flagged PO as it is (its own price, revised if the supplier raised it, its expected arrival and its P(late)) is ranked as one more option.
 - **FR-SEL-2** Scoring is **plain Python, deterministic**, never computed by the LLM. For candidate s and quantity Q:
   - arrival = today + LEAD_DAYS_s
-  - p_late = SAP-RPT P(late) for a hypothetical PO row (supplier s, Q, today); fallback Beta posterior mean
+  - p_late = for a candidate, the FR-DET-4 delay risk for a hypothetical PO row dated today (supplier s, Q, today)
   - d_late = supplier's expected delay when late (from history)
   - stockout_days = p_late x max(0, arrival + d_late - stockout_date) + (1 - p_late) x max(0, arrival - stockout_date)
   - expected_cost = Q x NETPR_s + stockout_days x DOWNTIME_COST_PER_DAY
@@ -186,9 +186,9 @@ Threshold note: routine POs are 3 to 8 t of sugar, about Rp50 to 150 juta. Rp100
 
 ### 7.6 Evaluation and Learning (FR-EVA)
 - **FR-EVA-1** `record_outcome` after each goods receipt (on time or late, delay days).
-- **FR-EVA-2** Reliability per supplier = Beta(alpha, beta), prior Beta(2, 1) (weak, slightly optimistic), updated per receipt with forgetting factor 0.97 per receipt so a deteriorating supplier (100108) shows up within weeks.
+- **FR-EVA-2** Reliability per supplier = Beta(alpha, beta), prior Beta(2, 1) (weak, slightly optimistic), updated per receipt with forgetting factor 0.97 per receipt, meant to let a deteriorating supplier (100108) show up. The posterior feeds the delay risk in FR-DET-4 and there uses only goods receipts posted before the decision date. Known limit: with a forgetting factor of 0.97 a supplier that got worse recently moves slowly (supplier 100108: posterior 0.22, true late rate 0.45, simulated), so the blend does not catch that drift.
 - **FR-EVA-3** Expose the posterior mean and 90% interval per supplier; chart it over time for the demo ("what does it learn?").
-- **FR-EVA-4** Monte Carlo (in `eval/`, may use `data_gen/world.py`): for each scenario, 1,000 runs each for GESIT's pick, always-cheapest and always-fastest; report mean total cost, mean stock-out days, P(any stock-out).
+- **FR-EVA-4** Monte Carlo (in `eval/`, may use `data_gen/world.py`): for each scenario, 1,000 runs each for GESIT's pick, always-cheapest and always-fastest; report mean total cost, mean stock-out days, P(any stock-out). For each scenario, 1,000 runs per strategy (GESIT with SAP-RPT only, GESIT with the reliability blend, always-cheapest, always-fastest, keep the current PO) in the tracked world and ten more worlds from generator seeds 1 to 10, declared before the results. Report mean total cost, mean stock-out days, P(any stock-out), the paired difference with a 95% interval, the number of worlds where GESIT is cheaper, and the result at downtime costs of Rp50 to 300 juta per day (on the tracked world). The true supplier behaviour is the same in every world; only the history, quotes and capacity the agents see differ. Always-fastest means the fastest new order that can cover the full quantity from one supplier.
 - **FR-EVA-5** Benchmark SAP-RPT against logistic regression and gradient boosting on the same time split (AUC, Brier score).
 
 ## 8. Tool contracts (MCP via AgentCore Gateway)
@@ -203,7 +203,7 @@ All return JSON; amounts in IDR, quantities in KG, dates ISO.
 | get_quotes | matnr | quotes_asof rows |
 | get_inventory | matnr | stock, daily usage, days of cover, downtime cost |
 | get_market_price | matnr, date | PIHPS anchor price |
-| predict_delay_risk | rows[] (rpt_po_lines schema) | P(late) per row, model id, fallback flag and reason, network retries |
+| predict_delay_risk | rows[] (rpt_po_lines schema) | P(late) per row (P_RPT, P_POST, P_USED), model id, fallback flag and reason, network retries |
 | score_suppliers | matnr, qty, need_by, today?, exclude_lifnr?, reserved_kg?, current_po? | ranked table (FR-SEL-2), with the keep-the-current-PO row when current_po is given |
 | draft_po | lifnr, matnr, qty, netpr, eindt, reason, ernam, replaces?, bedat? | ebeln (DRAFT) |
 | submit_for_approval | ebeln; caller identity (from the Gateway) | approval request id |
@@ -291,7 +291,8 @@ Mentoring questions: Smartsheet on Mondays 12, 19, 26 Oct before 16:00 WIB.
 | Scope creep | Freeze 25 Oct; anything not in section 7 goes to the backlog |
 
 ## 16. Q&A preparation
-- How is this different from SAP's Bid Analysis Agent? (prediction before failure, risk-priced choice, integrity guard, proven vs baselines)
+- How is this different from SAP's Bid Analysis Agent? (prediction before failure, risk-priced choice, integrity guard, tested vs baselines in simulation)
+- Why does GESIT not beat always-fastest everywhere? (over 11 simulated worlds GESIT with the blend is cheaper than always-cheapest in 9, always cheaper than keeping the PO, and against always-fastest cheaper in 6, equal in 2, higher in 3, Rp7 juta higher on average, simulated; the value is the explanation, the policy checks and the human decision; limit: same supplier behaviour in every world)
 - What does the Evaluation agent actually learn? (reliability posterior per supplier, drift on 100108)
 - What if the agent recommends the wrong supplier? (human approval, override with reason, outcome feeds back)
 - How would this integrate with a real S/4HANA? (same field names, OData adapter)
@@ -340,3 +341,5 @@ Decided on 8 Oct 2026 (team to object by 9 Oct, otherwise these stand):
 - 2026-10-20: FR-DET-2, FR-SEL-1 to FR-SEL-3: one world for the demo scenarios: every run sees every notice on file and the scenario only picks the case shown; Supplier Evaluation takes Detection's full flagged list; spare capacity goes to flagged POs in Detection's urgency order; cheapest tie-break on equal price (fewer expected stock-out days, more spare capacity, lower LIFNR). S2 alone now recommends keeping PO 4500000432 (simulated).
 - 2026-10-20: Proposals 4 to 9 applied by team decision (`docs/prd_change_proposals.md`; items 1 to 3 not agreed, not applied). Also: section 5 "State, audit" row notes the local JSONL decision log (item 8); section 16 adds "What happens to the old PO?" with the deck sentence (item 5); section 12 step 3b and the section 8 `record_override` row say "Supplier Evaluation" instead of "Evaluation" (item 7).
 - 2026-10-20: FR-SEL-3: fastest is marked only among new orders that can cover the full quantity from one supplier (a split order is ranked but never marked fastest).
+- 2026-10-21: FR-DET-4, FR-EVA-2, FR-SEL-2, section 8: the delay risk is the 50:50 blend of SAP-RPT and the supplier's reliability posterior (goods receipts before the decision date only); with SAP-RPT unavailable the posterior alone. Known limit: the blend does not catch the slow drift of supplier 100108 (simulated). Team decision. The FR-SEL-2 p_late bullet now names the FR-DET-4 delay risk instead of SAP-RPT alone, and the FR-EVA-2 clause "shows up within weeks" now reads "meant to let ... show up".
+- 2026-10-21: FR-EVA-4, section 4, section 16: Monte Carlo robustness over 11 simulated worlds and downtime costs of Rp50 to 300 juta per day; claims reworded from 'proven against baselines' to 'tested against baselines in simulation'; GESIT is cheaper than always-cheapest and keeping the PO in most worlds and close to always-fastest, which is cheaper on average (simulated). Goal 5 (section 2) reworded from "show that GESIT beats" to "test how GESIT compares with" the two baselines.

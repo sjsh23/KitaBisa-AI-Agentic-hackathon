@@ -57,6 +57,10 @@ python -m agents.integrity S1 --buyer BUYER01 --choose 100108 --justification "t
 # Monte Carlo against baselines (FR-EVA-4): GESIT, always-cheapest, always-fastest, keep the PO,
 # outcomes from data_gen/world.py (eval/ only, D-1); --json PATH writes the numbers
 python -m eval.monte_carlo --scenario all --runs 1000 --seed 42
+# robustness (simulated): pre-declared extra worlds (generator seeds 1 to 10, temporary folders),
+# downtime cost sweep (decisions fixed and re-made), --baseline-table rpt|same|both, --summary
+python -m eval.monte_carlo --scenario all --worlds 1,2,3,4,5,6,7,8,9,10 --runs 1000 --seed 42 --summary --json PATH
+python -m eval.monte_carlo --scenario all --runs 1000 --seed 42 --downtime-sweep 50000000,100000000,150000000,300000000
 ```
 
 Credentials for SAP AI Core (SAP-RPT-1.6 and the Gen AI Hub models) go in `.env` (see `.env.example`).
