@@ -1,0 +1,7 @@
+description: Approve or release one GESIT purchase order by its number, as the procurement manager. Use when the user says approve or release a purchase order.
+slots:
+  - name: ebeln
+    description: The purchase order number to approve, for example 4500000435.
+target:
+  name: approve_po_function
+  type: function

@@ -1,0 +1,18 @@
+parameters:
+  - name: scenario_id
+action_groups:
+  - actions:
+      - type: api-request
+        method: POST
+        system_alias: GESIT_API
+        path: /run
+        headers:
+          Content-Type: application/json
+        body: >
+          {"scenario": "<? scenario_id ?>", "llm": true}
+        result_variable: apiResponse
+      - type: message
+        message:
+          type: text
+          markdown: true
+          content: "<? apiResponse.body.SUMMARY ?>"
