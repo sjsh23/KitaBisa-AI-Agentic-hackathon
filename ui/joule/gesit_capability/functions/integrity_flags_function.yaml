@@ -1,17 +1,29 @@
 action_groups:
-  - actions:
-      - type: api-request
-        method: GET
-        system_alias: GESIT_API
-        path: /integrity
-        result_variable: apiResponse
-      - type: message
-        message:
-          type: text
-          markdown: true
-          content: "<? apiResponse.body.SUMMARY ?>"
-      - type: message
-        message:
-          type: text
-          markdown: true
-          content: "<? apiResponse.body.TABLE_MD ?>"
+- actions:
+  - type: api-request
+    method: GET
+    system_alias: GESIT_API
+    path: /integrity
+    result_variable: apiResponse
+  - type: message
+    message:
+      type: text
+      markdown: true
+      content: <? apiResponse.body.SUMMARY ?>
+  - type: message
+    message:
+      type: text
+      markdown: true
+      content: <? apiResponse.body.TABLE_MD ?>
+  - type: message
+    message:
+      type: quickReplies
+      content:
+        title: What next?
+        buttons:
+        - title: Pending approvals
+          value: Show pending approvals
+        - title: Compare with simple rules
+          value: How does GESIT compare with simple rules?
+        - title: Reset demo
+          value: Reset the GESIT demo

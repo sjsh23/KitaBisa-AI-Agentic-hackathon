@@ -1,12 +1,24 @@
 action_groups:
-  - actions:
-      - type: api-request
-        method: GET
-        system_alias: GESIT_API
-        path: /status
-        result_variable: apiResponse
-      - type: message
-        message:
-          type: text
-          markdown: true
-          content: "<? apiResponse.body.SUMMARY ?>"
+- actions:
+  - type: api-request
+    method: GET
+    system_alias: GESIT_API
+    path: /status
+    result_variable: apiResponse
+  - type: message
+    message:
+      type: text
+      markdown: true
+      content: <? apiResponse.body.SUMMARY ?>
+  - type: message
+    message:
+      type: quickReplies
+      content:
+        title: What next?
+        buttons:
+        - title: Reset demo
+          value: Reset the GESIT demo
+        - title: Run scenario S1
+          value: Run GESIT on scenario S1
+        - title: Compare with simple rules
+          value: How does GESIT compare with simple rules?
