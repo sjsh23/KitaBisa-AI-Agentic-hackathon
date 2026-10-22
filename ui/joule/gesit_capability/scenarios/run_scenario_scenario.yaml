@@ -1,0 +1,7 @@
+description: Run GESIT on a scenario (S1, S2, S3 or all). Check the sugar purchase orders for supplier delays, rank backup suppliers by expected cost and draft a replacement purchase order.
+slots:
+  - name: scenario_id
+    description: The GESIT scenario to run. One of S1, S2, S3 or all.
+target:
+  name: run_scenario_function
+  type: function

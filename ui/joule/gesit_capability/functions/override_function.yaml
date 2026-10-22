@@ -1,0 +1,20 @@
+parameters:
+  - name: scenario_id
+  - name: lifnr
+  - name: justification
+action_groups:
+  - actions:
+      - type: api-request
+        method: POST
+        system_alias: GESIT_API
+        path: /override
+        headers:
+          Content-Type: application/json
+        body: >
+          {"scenario": "<? scenario_id ?>", "choose": "<? lifnr ?>", "justification": "<? justification ?>"}
+        result_variable: apiResponse
+      - type: message
+        message:
+          type: text
+          markdown: true
+          content: "<? apiResponse.body.SUMMARY ?>"

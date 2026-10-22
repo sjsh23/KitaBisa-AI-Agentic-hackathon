@@ -1,0 +1,9 @@
+description: Reject, decline or deny one GESIT purchase order by its number, with the manager's reason. Use when the user says reject, decline or deny a purchase order.
+slots:
+  - name: ebeln
+    description: The purchase order number to reject, for example 4500000435.
+  - name: reason
+    description: Why the manager rejects it, at least 20 characters.
+target:
+  name: reject_po_function
+  type: function

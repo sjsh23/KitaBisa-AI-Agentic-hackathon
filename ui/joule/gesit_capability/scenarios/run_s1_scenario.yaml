@@ -1,4 +1,0 @@
-description: Run GESIT on scenario S1. Check the sugar purchase orders for supplier delays and recommend a backup supplier.
-target:
-  name: run_s1_function
-  type: function
