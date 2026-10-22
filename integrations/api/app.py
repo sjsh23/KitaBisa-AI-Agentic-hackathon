@@ -250,7 +250,8 @@ def create_app(load_env: bool = True) -> FastAPI:
                 "OVERRIDE_ID": run.choice["OVERRIDE_ID"] if run.choice else None,
                 "CHOSEN": run.choice["CHOSEN"] if run.choice else body.choose,
                 "RECOMMENDED": recommended_label(case) if case else None,
-                "PLAN": out["PLAN"], "CASES": out["CASES"], "DRAFTS": drafts,
+                "PLAN": out["PLAN"], "CASES": out["CASES"], "TABLE_MD": out["TABLE_MD"],
+                "DRAFTS": drafts,
                 "INTEGRITY_FLAGS": views.flags_view(flags)}
 
     # ------------------------------------------------------------------ reset

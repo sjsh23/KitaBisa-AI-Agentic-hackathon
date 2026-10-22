@@ -20,7 +20,8 @@ H = {"X-API-Key": KEY}
 REASON = "Price too high for this quarter, ask buyer for option 2"
 JUSTIFICATION = "100109 has only 4 receipts, we prefer a long track record"
 MAX_BYTES = 20_000
-UNMARKED_AMOUNT = re.compile(r"Rp[\d,]*\d(?![\d,]| \(simulated\))")   # an amount without the label
+# an amount in SUMMARY without the label: "Rp1,000 (simulated)" or "Rp1,000 higher (simulated)"
+UNMARKED_AMOUNT = re.compile(r"Rp[\d,]*\d(?![\d,]| \(simulated\)| higher \(simulated\))")
 
 
 @pytest.fixture
@@ -100,7 +101,10 @@ def test_run_s1(client):
         "100109", 10_000.0, 175_500_000, "manager approval")
     text = data["SUMMARY"]
     assert 2 <= len(sentences(text)) <= 4
-    assert "recommends ordering from supplier 100109" in text and "cheapest" in text
+    assert "recommends ordering from supplier 100109" in text
+    assert re.search(r"The lowest-price supplier, 100105, has an expected cost Rp[\d,]+ higher "
+                     r"\(simulated\), mainly from its delay risk", text), text
+    assert "100109 is also the fastest supplier" in text and "would cost" not in text
     assert "waits for the manager" in text and "Rp175,500,000 (simulated)" in text
 
 
@@ -153,7 +157,7 @@ def test_approvals_list(client):
     ebeln = pending_s1(client)
     data = call(client, "GET", "/approvals")
     assert data["PENDING"][0]["APPROVAL_REQUEST_ID"] == f"APR-{ebeln}"
-    assert "1 PO wait" in data["SUMMARY"]
+    assert "1 PO waits for the manager's approval." in data["SUMMARY"]
 
 
 def test_policy_deny_is_403(client):
@@ -243,3 +247,86 @@ def test_every_run_response_is_small(client):
     for scenario in ("S1", "S2", "S3", "all", "scan"):
         body = json.dumps(call(client, "POST", "/run", {"scenario": scenario, "llm": False}))
         assert len(body.encode()) < MAX_BYTES
+
+
+# ------------------------------------------------- wording and TABLE_MD (unit level)
+from integrations.api import responses as views   # noqa: E402
+
+
+def _row(lifnr, purchase, risk, netpr=17_500):
+    return {"LIFNR": lifnr, "NETPR": netpr, "PURCHASE_COST": purchase, "RISK_COST": risk,
+            "EXPECTED_COST": purchase + risk}
+
+
+@pytest.mark.parametrize("row, driver", [
+    (_row("100105", 170_000_000, 90_000_000), "its delay risk"),      # cheaper, riskier
+    (_row("100102", 190_000_000, 5_000_000), "its purchase cost"),    # pricier, safer
+])
+def test_versus_phrase_names_the_main_driver(row, driver):
+    best = _row("100109", 175_000_000, 4_000_000)
+    text = views.versus_phrase(row, best, "lowest-price supplier")
+    gap = row["EXPECTED_COST"] - best["EXPECTED_COST"]
+    assert text == (f"the lowest-price supplier, {row['LIFNR']}, has an expected cost "
+                    f"Rp{gap:,} higher (simulated), mainly from {driver}")
+
+
+def test_versus_phrase_without_extra_cost_has_no_driver():
+    best = _row("100109", 175_000_000, 4_000_000)
+    assert "mainly" not in views.versus_phrase(dict(best, LIFNR="100106"), best, "fastest supplier")
+
+
+@pytest.mark.parametrize("n, text", [
+    (1, "1 PO waits for the manager's approval."),
+    (2, "2 POs wait for the manager's approval."),
+])
+def test_pending_summary_singular_and_plural(n, text):
+    pending = [{"EBELN": f"450000043{5 + i}", "LIFNR": "100109", "MENGE": 10_000.0,
+                "NETWR": 175_500_000, "REPLACES_EBELN": "4500000431"} for i in range(n)]
+    summary = views.pending_summary(pending)
+    assert summary.startswith(text) and not UNMARKED_AMOUNT.findall(summary)
+
+
+def test_table_md_for_s1(client):
+    data = call(client, "POST", "/run", {"scenario": "S1", "llm": False})
+    md = data["CASES"][0]["TABLE_MD"]
+    lines = md.splitlines()
+    assert lines[0] == ("| Rank | Supplier | Expected cost (Rp juta) | Price/kg | Lead days | "
+                        "Marks |")
+    assert lines[1] == "|---|---|---|---|---|---|"
+    rows = [l for l in lines[2:] if l.startswith("| ")]
+    assert len(rows) == 4 and rows[0].startswith("| 1 | 100109 | ")
+    assert "keep PO 4500000431 (100101)" in rows[-1]
+    assert lines[-1] == "All numbers simulated."
+    first = data["CASES"][0]["TABLE"][0]
+    assert f"| {first['EXPECTED_COST'] / 1e6:,.1f} |" in rows[0]   # Rp juta, one decimal
+    assert data["TABLE_MD"].startswith("### PO 4500000431 (delay notice)")
+
+
+def test_table_md_marks_moq_and_split(client):
+    data = call(client, "POST", "/run", {"scenario": "S3", "llm": False})
+    md = data["CASES"][0]["TABLE_MD"]
+    assert "split with 100102 (5,000 kg, MOQ +300 kg)" in md and "fastest" in md
+
+
+def test_top_level_table_md_is_small_and_has_a_heading_per_po(client):
+    data = call(client, "POST", "/run", {"scenario": "all", "llm": False})
+    md = data["TABLE_MD"]
+    assert len(md.encode()) < views.MD_MAX_BYTES
+    assert [l for l in md.splitlines() if l.startswith("### PO ")] == [
+        "### PO 4500000431 (delay notice)", "### PO 4500000433 (capacity shortfall)",
+        "### PO 4500000432 (price increase)"]
+    assert md.count("All numbers simulated.") == 3
+
+
+def test_tables_md_stops_before_the_size_limit(client, monkeypatch):
+    monkeypatch.setattr(views, "MD_MAX_BYTES", 900)
+    data = call(client, "POST", "/run", {"scenario": "all", "llm": False})
+    md = data["TABLE_MD"]
+    assert len(md.encode()) < 900 and md.rstrip().endswith("more cases in CASES.")
+
+
+def test_override_has_table_md(client):
+    data = call(client, "POST", "/override",
+                {"scenario": "S1", "choose": "100108", "justification": JUSTIFICATION})
+    assert data["TABLE_MD"].startswith("### PO 4500000431")
+    assert "TABLE_MD" in data["CASES"][0]

@@ -68,13 +68,69 @@ def table_view(case: dict[str, Any]) -> list[dict[str, Any]]:
     return [row_view(r) for r in shown]
 
 
+MD_COLUMNS = ("Rank", "Supplier", "Expected cost (Rp juta)", "Price/kg", "Lead days", "Marks")
+MD_SIMULATED = "All numbers simulated."
+MD_MAX_BYTES = 3_000   # top-level TABLE_MD
+
+
+def juta(amount: int | float) -> str:
+    """An IDR amount in Rp juta with one decimal: 178921875 -> "178.9"."""
+    return f"{amount / 1_000_000:,.1f}"
+
+
+def short_marks(row: dict[str, Any]) -> str:
+    """Marks for the Markdown table: cheapest, fastest, MOQ +N kg, split with X."""
+    out = [m for m, on in (("cheapest", row.get("IS_CHEAPEST")),
+                           ("fastest", row.get("IS_FASTEST"))) if on]
+    if row.get("MOQ_EXTRA_KG"):
+        out.append(supplier_score.moq_text(row["MOQ_EXTRA_KG"]))
+    split = row.get("SPLIT_WITH")
+    if split:
+        moq = (f", {supplier_score.moq_text(split['MOQ_EXTRA_KG'])}"
+               if split.get("MOQ_EXTRA_KG") else "")
+        out.append(f"split with {split['LIFNR']} ({split['MENGE']:,.0f} kg{moq})")
+    return ", ".join(out) or "-"
+
+
+def table_md(case: dict[str, Any]) -> str:
+    """The rows of `table_view` (top 3 plus the keep row) as a small Markdown table."""
+    rows = case["SCORING"]["CANDIDATES"]
+    shown = rows[:TOP_ROWS]
+    keep = next((r for r in rows if r["OPTION"] == supplier_score.OPTION_KEEP), None)
+    if keep is not None and keep not in shown:
+        shown = shown + [keep]
+    lines = ["| " + " | ".join(MD_COLUMNS) + " |", "|" + "---|" * len(MD_COLUMNS)]
+    for r in shown:
+        supplier = (f"keep PO {r['KEEP_EBELN']} ({r['LIFNR']})"
+                    if r["OPTION"] == supplier_score.OPTION_KEEP else r["LIFNR"])
+        lines.append(f"| {r['RANK']} | {supplier} | {juta(r['EXPECTED_COST'])} | "
+                     f"Rp{r['NETPR']:,} | {r['LEAD_DAYS']} | {short_marks(r)} |")
+    if not shown:
+        lines.append("| - | no candidate supplier | - | - | - | - |")
+    return "\n".join(lines + ["", MD_SIMULATED])
+
+
+def tables_md(cases: list[dict[str, Any]]) -> str:
+    """Every case's TABLE_MD under a heading per PO, kept under MD_MAX_BYTES."""
+    parts: list[str] = []
+    for i, case in enumerate(cases):
+        reasons = ", ".join(REASON_LABELS.get(c, c) for c in case["REASON_CODES"])
+        part = f"### PO {case['EBELN']} ({reasons})\n\n{table_md(case)}"
+        more = f"\n\n{len(cases) - i} more cases in CASES."
+        if len("\n\n".join(parts + [part]).encode()) + len(more) > MD_MAX_BYTES:
+            parts.append(more.strip())
+            break
+        parts.append(part)
+    return "\n\n".join(parts)
+
+
 def case_view(case: dict[str, Any], old_po: dict[str, Any] | None = None) -> dict[str, Any]:
     table = case["SCORING"]
     out = {"EBELN": case["EBELN"], "LIFNR": case["LIFNR"], "QTY": case["QTY"],
            "NEED_BY": case["NEED_BY"],
            "REASONS": [REASON_LABELS.get(c, c) for c in case["REASON_CODES"]],
            "RECOMMENDED": recommended_label(case), "CHEAPEST": table["CHEAPEST"],
-           "FASTEST": table["FASTEST"], "TABLE": table_view(case),
+           "FASTEST": table["FASTEST"], "TABLE": table_view(case), "TABLE_MD": table_md(case),
            "OLD_PO": (old_po or {}).get("TEXT")}
     if "EXPLANATION" in case:
         out["EXPLANATION"] = case["EXPLANATION"]
@@ -118,6 +174,23 @@ def _recommendation(case: dict[str, Any], gerund: bool = False) -> str:
     return f"{'ordering' if gerund else 'order'} from {what}, {cost}"
 
 
+# What makes a row cost more than #1, from scoring.supplier_score.main_driver (FR-SEL-4).
+DRIVER_WORDS = {"RISK": "its delay risk", "PURCHASE": "its purchase cost"}
+# How SUMMARY names the cheapest and the fastest new order (IS_CHEAPEST, IS_FASTEST).
+BASELINE_WORDS = (("IS_CHEAPEST", "lowest-price supplier"), ("IS_FASTEST", "fastest supplier"))
+
+
+def versus_phrase(row: dict[str, Any], best: dict[str, Any], name: str) -> str:
+    """"the lowest-price supplier, 100105, has an expected cost Rp75,829,526 higher
+    (simulated), mainly from its delay risk"; the gap and the driver come from
+    `supplier_score.compare_to_best`, never recomputed here."""
+    diff = supplier_score.compare_to_best(row, best)
+    text = (f"the {name}, {row['LIFNR']}, has an expected cost "
+            f"Rp{diff['EXPECTED_COST_GAP']:,} higher (simulated)")
+    driver = DRIVER_WORDS.get(diff["MAIN_DRIVER"])
+    return text + (f", mainly from {driver}" if driver else "")
+
+
 def _comparison(case: dict[str, Any]) -> str | None:
     """How #1 compares with the cheapest and the fastest new order (FR-SEL-4)."""
     rows = case["SCORING"]["CANDIDATES"]
@@ -125,15 +198,12 @@ def _comparison(case: dict[str, Any]) -> str | None:
         return None
     best = rows[0]
     parts = []
-    for word, row in (("cheapest", next((r for r in rows if r["IS_CHEAPEST"]), None)),
-                      ("fastest", next((r for r in rows if r["IS_FASTEST"]), None))):
+    for flag, name in BASELINE_WORDS:
+        row = next((r for r in rows if r[flag]), None)
         if row is None:
             continue
-        if row is best:
-            parts.append(f"{best['LIFNR']} is also the {word} new order")
-        else:
-            gap = supplier_score.compare_to_best(row, best)["EXPECTED_COST_GAP"]
-            parts.append(f"the {word} new order, {row['LIFNR']}, would cost {rp(gap)} more")
+        parts.append(f"{best['LIFNR']} is also the {name}" if row is best
+                     else versus_phrase(row, best, name))
     if not parts:
         return None
     return _upper_first("; ".join(parts)) + "."
@@ -189,8 +259,8 @@ def run_summary(report: dict[str, Any] | None, evaluation: dict[str, Any] | None
     sentences = [f"PO {c['EBELN']}: {_recommendation(c)}; {_next_step(c['EBELN'], actions)}."
                  for c in shown]
     rest = len(cases) - len(shown)
-    sentences.append(f"{rest} more cases and the cheapest and fastest comparisons are in CASES."
-                     if rest else "The cheapest and fastest comparisons are in CASES.")
+    sentences.append(f"{rest} more cases and the lowest-price and fastest comparisons are in "
+                     "CASES." if rest else "The lowest-price and fastest comparisons are in CASES.")
     return " ".join(sentences)
 
 
@@ -205,6 +275,7 @@ def run_response(supervisor: Any) -> dict[str, Any]:
         "PLAN": plan_view(supervisor.plan),
         "FLAGGED_EBELN": (supervisor.report or {}).get("FLAGGED_EBELN", []),
         "CASES": [case_view(c, old.get(c["EBELN"])) for c in cases],
+        "TABLE_MD": tables_md(cases),
         "DRAFTS": draft_views(supervisor.actions),
     }
 
@@ -215,8 +286,8 @@ def pending_summary(pending: list[dict[str, Any]]) -> str:
         return ("No PO is waiting for approval. A draft above "
                 f"{rp(APPROVAL_THRESHOLD_IDR)} appears here after a run.")
     first = pending[:2]
-    lines = [f"{len(pending)} PO{'s' if len(pending) != 1 else ''} wait for the manager's "
-             "approval."]
+    lines = [f"{len(pending)} PO waits for the manager's approval." if len(pending) == 1 else
+             f"{len(pending)} POs wait for the manager's approval."]
     lines += [f"PO {p['EBELN']}: supplier {p['LIFNR']}, {p['MENGE']:,.0f} kg, NETWR "
               f"{rp(p['NETWR'])}, replaces PO {p['REPLACES_EBELN']}." for p in first]
     lines.append("Approve, or reject with a reason of at least 20 characters.")
