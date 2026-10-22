@@ -73,6 +73,7 @@ RECOMMENDED_IS_FASTEST is true, say it is also the fastest option.
 - If TRACK_RECORD_WARNING is present, copy it word for word, with its full stop.
 - If PREDICTION_NOTE is present, copy it word for word, with its full stop.
 - If FASTEST_NOTE is present, copy it word for word, with its full stop.
+- If RECOMMENDED has MINIMUM_ORDER, you may say it in one short sentence, with its figures.
 - End with: All figures are simulated.
 
 Rules:
@@ -331,6 +332,7 @@ def _row_facts(row: dict[str, Any], qty: float, remainder: bool = False) -> dict
         quantity = (f"{supplier_score.CANNOT_COVER_NOTE}: {row['MENGE']:,.0f} kg from "
                     f"supplier {row['LIFNR']} plus {part['MENGE']:,.0f} kg from "
                     f"supplier {part['LIFNR']} at {rp(part['NETPR'])} per kg")
+    moq = moq_phrase(row)
     keep = is_keep(row)
     kept = f"the {row['MENGE']:,.0f} kg remainder on order" if remainder else "order"
     return {
@@ -346,7 +348,20 @@ def _row_facts(row: dict[str, Any], qty: float, remainder: bool = False) -> dict
         "EXPECTED_COST": f"expected cost {rp(row['EXPECTED_COST'])}",
         "PAST_DELIVERIES": f"{row['N_RECEIPTS']} past deliveries",
         "QUANTITY": quantity,
+        **({"MINIMUM_ORDER": moq} if moq else {}),
     }
+
+
+def moq_phrase(row: dict[str, Any]) -> str | None:
+    """The MOQ round-up of a row in words (proposal item 12), numbers from the table, or None."""
+    parts = [row] + ([row["SPLIT_WITH"]] if row.get("SPLIT_WITH") else [])
+    raised = [p for p in parts if p.get("MOQ_EXTRA_KG")]
+    if not raised:
+        return None
+    return "; ".join(
+        f"order to supplier {p['LIFNR']} raised to its minimum order quantity of "
+        f"{p['MENGE']:,.0f} kg, {p['MOQ_EXTRA_KG']:,.0f} kg more than needed, the extra counted "
+        f"in the purchase cost" for p in raised)
 
 
 def _phrase(part: dict[str, Any]) -> str:

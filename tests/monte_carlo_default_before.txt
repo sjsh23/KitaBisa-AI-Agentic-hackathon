@@ -63,7 +63,7 @@ GESIT_LEARNING vs          MEAN DIFF                            95% INTERVAL   C
 Scenario S3: replacement for PO 4500000433, 7,200 kg, stock-out date 2026-10-06, predictions RPT_ONLY sap-rpt-1.6, LEARNING sap-rpt-1.6 + posterior
 STRATEGY         CHOICE                                 PREDICTED Rp        MEAN Rp         P90 Rp MEAN OUT d P(any out)
 GESIT_RPT_ONLY   100108 7,200 kg                         166,312,500    208,950,000    426,000,000      0.553      22.2%
-GESIT_LEARNING   100109 2,500 kg + 100102 4,700 kg       158,520,179    131,384,167    130,355,000      0.007       1.2%
+GESIT_LEARNING   100102 7,200 kg                         160,645,179    132,780,000    132,480,000      0.002       0.1%
 ALWAYS_CHEAPEST  100105 7,200 kg                         213,736,154    165,840,000    125,640,000      0.268       8.9%
 ALWAYS_FASTEST   100102 7,200 kg                         168,640,714    132,780,000    132,480,000      0.002       0.1%
 KEEP_CURRENT_PO  keep PO 4500000433                      964,522,857    878,430,000    878,880,000      4.997     100.0%
@@ -72,15 +72,15 @@ GESIT_RPT_ONLY vs          MEAN DIFF                            95% INTERVAL   C
   ALWAYS_FASTEST        Rp76,170,000            [Rp63,755,044, Rp88,584,956]     77.8%    0.0%
   KEEP_CURRENT_PO     -Rp669,480,000        [-Rp683,360,702, -Rp655,599,298]     98.9%    0.0%
 GESIT_LEARNING vs          MEAN DIFF                            95% INTERVAL   CHEAPER    SAME
-  ALWAYS_CHEAPEST      -Rp34,455,833          [-Rp44,732,317, -Rp24,179,349]      8.9%    0.0%
-  ALWAYS_FASTEST        -Rp1,395,833              [-Rp1,953,416, -Rp838,251]     98.9%    0.0%
-  KEEP_CURRENT_PO     -Rp747,045,833        [-Rp753,265,711, -Rp740,825,955]    100.0%    0.0%
-  GESIT_RPT_ONLY       -Rp77,565,833          [-Rp89,987,777, -Rp65,143,890]     22.2%    0.0%
+  ALWAYS_CHEAPEST      -Rp33,060,000          [-Rp43,330,933, -Rp22,789,067]                        8.9%                     0.0%
+  ALWAYS_FASTEST                 Rp0                              [Rp0, Rp0]                        0.0%                   100.0%
+  KEEP_CURRENT_PO     -Rp745,650,000        [-Rp751,854,866, -Rp739,445,134]                      100.0%                     0.0%
+  GESIT_RPT_ONLY       -Rp76,170,000          [-Rp88,584,956, -Rp63,755,044]                       22.2%                     0.0%
 
 TOTAL over S1, S2, S3 (per run, costs and stock-out days added up)
 STRATEGY         CHOICE                                 PREDICTED Rp        MEAN Rp         P90 Rp MEAN OUT d P(any out)
 GESIT_RPT_ONLY   -                                       494,358,929    545,150,000    751,100,000      0.627      25.2%
-GESIT_LEARNING   -                                       487,042,054    467,584,167    455,455,000      0.081       4.2%
+GESIT_LEARNING   -                                       489,167,054    468,980,000    457,580,000      0.076       4.2%
 ALWAYS_CHEAPEST  -                                       699,833,407    560,340,000    439,740,000      0.804       8.9%
 ALWAYS_FASTEST   -                                       526,430,000    458,180,000    455,180,000      0.020       1.2%
 KEEP_CURRENT_PO  -                                     2,265,002,321  2,156,680,000  2,699,980,000     11.378     100.0%
@@ -89,10 +89,10 @@ GESIT_RPT_ONLY vs          MEAN DIFF                            95% INTERVAL   C
   ALWAYS_FASTEST        Rp86,970,000            [Rp73,992,307, Rp99,947,693]     75.6%    0.0%
   KEEP_CURRENT_PO   -Rp1,611,530,000    [-Rp1,640,786,918, -Rp1,582,273,082]     99.7%    0.0%
 GESIT_LEARNING vs          MEAN DIFF                            95% INTERVAL   CHEAPER    SAME
-  ALWAYS_CHEAPEST      -Rp92,755,833         [-Rp123,848,887, -Rp61,662,780]      8.9%    0.0%
-  ALWAYS_FASTEST         Rp9,404,167             [Rp5,494,216, Rp13,314,118]      0.1%    0.0%
-  KEEP_CURRENT_PO   -Rp1,689,095,833    [-Rp1,715,412,308, -Rp1,662,779,359]    100.0%    0.0%
-  GESIT_RPT_ONLY       -Rp77,565,833          [-Rp89,987,777, -Rp65,143,890]     22.2%    0.0%
+  ALWAYS_CHEAPEST      -Rp91,360,000         [-Rp122,425,634, -Rp60,294,366]                        8.9%                     0.0%
+  ALWAYS_FASTEST        Rp10,800,000             [Rp6,955,057, Rp14,644,943]                        0.1%                     0.0%
+  KEEP_CURRENT_PO   -Rp1,687,700,000    [-Rp1,713,990,888, -Rp1,661,409,112]                      100.0%                     0.0%
+  GESIT_RPT_ONLY       -Rp76,170,000          [-Rp88,584,956, -Rp63,755,044]                       22.2%                     0.0%
 
 All figures are simulated data. Seed 42, 1,000 runs per scenario and strategy, loop 0.44 s.
 Predictions (made once per case and mode, before the loop): Detection RPT_ONLY sap-rpt-1.6, LEARNING sap-rpt-1.6 + posterior. No SAP-RPT or LLM call inside the loop.

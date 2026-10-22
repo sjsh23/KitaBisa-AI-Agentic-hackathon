@@ -55,7 +55,11 @@ def decision_date(adapter: CsvAdapter) -> str:
 
 
 def get_quotes(matnr: str, adapter: CsvAdapter | None = None) -> list[dict[str, Any]]:
-    """Current quotes for a material (quotes_asof rows), including off-panel suppliers."""
+    """Current quotes for a material (quotes_asof rows), including off-panel suppliers.
+
+    Each row also has MINBM, the supplier's minimum order quantity in kg (EINE-MINBM,
+    simulated; None in older files, where scoring treats it as 0; proposal item 12).
+    """
     adapter = adapter or default_adapter()
     return adapter.quotes(matnr)
 

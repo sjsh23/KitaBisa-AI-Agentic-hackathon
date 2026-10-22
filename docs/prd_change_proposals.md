@@ -399,6 +399,67 @@ from the Gateway; output rejected, refused or denied, and the next option). POL-
 POL-4: `reject_po` is an approval tool. POL-1 (or a new POL-5): only role manager may call
 `reject_po`.
 
+## 12. Proposed PRD change: minimum order quantity in quotes and scoring (section 6, FR-SEL-1, FR-SEL-2, section 8)
+
+**Status:** built, waiting for team agreement (22 Oct 2026). `data_gen/config.py`,
+`data_gen/generate.py`, `scoring/supplier_score.py`.
+
+**Why.** Mentor question (21 Oct): "what if the backup supplier has a minimum order
+quantity?". A split order can leave a small remainder for its second supplier, below what
+that supplier accepts.
+
+**Data.** New column `quotes_asof.MINBM` (kg, S/4 EINE-MINBM), after AVAILABLE_KG_NEXT_30D,
+from a fixed per-supplier setting in `data_gen/config.py` (`MINBM_KG`, default
+`MINBM_DEFAULT_KG`), not from the random generator: 1,000 kg for every supplier, 5,000 kg for
+100102 (simulated assumption, D-4). Every other column and every other file is
+byte-identical after regenerating; the generated worlds of `eval/worlds.py` get the same
+setting. `get_quotes` returns the new field; the section 8 shape is unchanged.
+
+**Rule (one place, `scoring/supplier_score.py`).** For every part of a new order (a full order,
+or each of the two parts of a split):
+- below MINBM: order MINBM instead when AVAILABLE_KG_NEXT_30D allows it; the extra kg is
+  purchase cost at that supplier's NETPR, with no credit for the extra stock (conservative). The
+  row shows the ordered kg and a mark such as "MOQ +300 kg";
+- AVAILABLE_KG_NEXT_30D below MINBM: the supplier cannot take the order; excluded as a full
+  order (new reason BELOW_MOQ, "spare capacity below MOQ"), skipped as a split partner so the
+  next partner is tried;
+- the keep-the-current-PO row is not affected (an existing PO already met its MOQ);
+- capacity reservations and draft POs use the ordered kg, so a draft's MENGE and NETWR include
+  the round-up and POL-1 is checked on that NETWR;
+- risk cost, P(late), d_late and the downtime cost do not change; a quote without MINBM counts
+  as 0, so older files score exactly as before;
+- one footer line under every ranked table (`MOQ_RULE_TEXT`); the explanation facts name the
+  round-up when #1 has one.
+
+**S3 before and after (real SAP-RPT-1.6, `agents.run all --no-llm`, simulated data).**
+
+| | Rank | Row | Purchase Rp | Expected Rp |
+|---|---|---|---|---|
+| before | 1 | 100109 2,500 kg + 100102 4,700 kg | 130,355,000 | 158,520,179 |
+| before | 2 | 100102 7,200 kg | 132,480,000 | 160,645,179 |
+| after | 1 | 100102 7,200 kg | 132,480,000 | 160,645,179 |
+| after | 2 | 100109 2,500 kg + 100102 5,000 kg (MOQ +300 kg) | 135,875,000 | 164,040,179 |
+
+The 300 extra kg at Rp18,400 add Rp5,520,000 to the split, so 100102 alone becomes #1 for S3:
+one draft of 7,200 kg (NETWR Rp132,480,000, buyer one-click under POL-1) instead of two. S3
+now reserves 7,200 kg of 100102 and no 100109, so S2's table gets the 100109 2,500 kg +
+100102 5,500 kg split as its best new order (Rp171,231,250); keeping PO 4500000432 stays #1.
+S1 changes only by the footer line.
+
+**Monte Carlo (seed 42, 1,000 runs, real SAP-RPT-1.6, simulated).** Tracked world:
+GESIT_LEARNING Rp467.6 juta before, Rp469.0 juta after (S3 now the same order as
+always-fastest); the other strategies unchanged. Over 11 worlds, GESIT_LEARNING against
+always-fastest: cheaper in 6, equal in 2, higher in 3 (mean +Rp7.0 juta) before; cheaper in
+3, equal in 5, higher in 3 (mean +Rp8.4 juta) after. Against always-cheapest 9 of 11 and
+against keeping the PO 11 of 11 both times. MINBM was not tuned after these results. If
+the team agrees, the PRD section 16 Q&A numbers (6, 2, 3, Rp7 juta) need the new values.
+
+**Proposed PRD text.** Section 6 quotes_asof row: "Current quote, lead time, spare capacity,
+minimum order quantity (MINBM) per supplier". FR-SEL-1: "A supplier whose spare capacity is
+below its MINBM is not a candidate." FR-SEL-2: "An order part below the supplier's MINBM is
+raised to MINBM; the extra kilograms are purchase cost, with no credit for the extra stock."
+Section 8 `get_quotes`: quotes_asof rows incl. MINBM.
+
 ## PRD Changelog draft
 
 Lines to add to the Changelog at the end of `PRD.md` once the team agrees:
@@ -408,3 +469,4 @@ Lines to add to the Changelog at the end of `PRD.md` once the team agrees:
 
 - 2026-10-15: FR-SEL-1: suppliers with a flagged PO in the same run are excluded by default (switch EXCLUDE_FLAGGED_SUPPLIERS, reason listed per supplier); suppliers with zero spare capacity are excluded. Open: keep 100103 in S2, since a price revision does not delay delivery.
 - 2026-10-15: FR-SEL-2: split orders made explicit ("cannot cover full quantity", kilograms add up to Q, never ranked above spare capacity); in a run with several flagged POs, the recommended order reserves spare capacity for later cases. The S1 versus `all` difference for 100109 (12,500 kg spare) was this reservation, now shown in the output.
+- 2026-10-22: Section 6, FR-SEL-1, FR-SEL-2, section 8: minimum order quantity (quotes_asof.MINBM, simulated: 1,000 kg, 5,000 kg for 100102); an order part below MINBM is raised to MINBM and the extra kg counts as purchase cost; a supplier with spare capacity below MINBM is skipped (item 12).

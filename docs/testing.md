@@ -68,7 +68,7 @@ git diff --cached --name-only
 py -3.11 -m pytest -q
 ```
 
-Expected: `297 passed` (22 October 2026). The tests never call the network: SAP-RPT, SAP AI Core and the reasoning models are replaced by fakes.
+Expected: `313 passed` (22 October 2026). The tests never call the network: SAP-RPT, SAP AI Core and the reasoning models are replaced by fakes.
 
 | Test file | What it proves | Requirements |
 |---|---|---|
@@ -84,6 +84,7 @@ Expected: `297 passed` (22 October 2026). The tests never call the network: SAP-
 | `tests/test_integrity.py` | Only BUYER03 with 100107 flagged on the simulated EKKO (40 pairs tested); k = 4, ratio 1.9 and p >= 0.01 not flagged; share_others = 0 does not crash; binomial tail equals scipy; justification 19 characters rejected, 20 accepted, 25 spaces rejected; same choice writes nothing; one log line with every field; cost difference chosen minus recommended; overriding a keep recommendation; the Action agent drafts a choice only with an override id; neutral wording; the three CLI paths. Uses a temp DECISION_LOG_PATH | FR-INT-1 to FR-INT-4, D-3 |
 | `tests/test_monte_carlo.py` | The four strategies match the real recommendation (SAP-RPT replayed from a recorded run); SAP-RPT called once per case and never in the loop, no LLM call; same seed same result, other seed differs; an on-time world costs only the purchase; common random numbers; quantity-weighted stock-out for a split; a case without a fastest row stops; footer text; nothing outside `eval/` uses `data_gen/world.py`, `_truth/` or `eval` | FR-EVA-4, D-1, D-3 |
 | `tests/test_monte_carlo_robustness.py` | Default output unchanged against a frozen copy (`tests/monte_carlo_default_before.txt`) except the renamed headers and footer; two generated worlds: SAP-RPT once per world, case and mode, temporary folders deleted, `data_gen/out` hashes unchanged, a fallback world excluded from the cross-world summary; JSON has `simulated` and the cross-world summary; downtime sweep at Rp150,000,000 equals the main results (decisions fixed and re-made), a higher value raises only strategies with stock-out days; `--baseline-table rpt` gives the old numbers, `same` differs only where the LEARNING table differs; summary table; nothing outside `eval/` imports `eval` | FR-EVA-4, D-1, D-3 |
+| `tests/test_moq.py` | MINBM in the quotes (1,000 kg, 5,000 kg for 100102, simulated); an order part below MINBM raised to MINBM with the extra kg in the purchase cost and a "MOQ +300 kg" mark, risk cost unchanged; spare below MINBM excluded as a full order (BELOW_MOQ) and skipped as a split partner; MINBM equal to the need and a quote without MINBM change nothing; keep row unchanged; reservations and drafts use the ordered kg (NETWR incl. the round-up); the explanation facts name the round-up and pass the check | FR-SEL-1, FR-SEL-2, FR-ACT-1, POL-1, D-3 |
 | `tests/test_supervisor.py` | Plan steps for S1, S2, S3, all and scan (Integrity Guard before Action with `--choose`); the graph is a Strands Graph of Python nodes with fixed edges; each stop rule (nothing flagged, keep everywhere, no candidate for one case and for every case, policy deny hands back to the manager, short justification); a failed step is marked FAILED; the supervisor never calls `release_po`; the plan log line is JSON with every step, STATUS and SECONDS; the CLI prints the `agents.run` report after the plan | FR-SUP-1 to FR-SUP-3, FR-ACT-2, POL-4 |
 | `tests/test_approvals.py` | PO store saved and loaded by a second store object, numbers continue from the file, memory mode writes nothing, clear; S1 across two processes approved and rejected; next option from the saved table (rank 2, rank 1 after a rejected override, keep when it ranked higher); reject as its own decision log entry, overrides unchanged; agent denied approve and reject (POL-4), buyer denied reject (POL-1), reason under 20 characters refused; every double action changes nothing; CLI list, reject, approve | FR-ACT-2, FR-ACT-3, POL-1, POL-4, FR-INT-1 |
 
@@ -148,8 +149,11 @@ numbers differ from a run with the real SAP-RPT):
 |---|---|---|---|---|
 | `S1` | 4500000431, 10,000 kg | 100109, expected cost Rp179,397,321 | 100105 | 100109 |
 | `S2` | 4500000432, 8,000 kg | keep PO 4500000432, Rp149,600,000 | 100105 | 100102 |
-| `S3` | 4500000433, 7,200 kg (the late remainder only) | 100109 split (2,500 kg, plus 4,700 kg from 100102), Rp150,504,554 | 100105 | 100102 (100109 is a split, so not fastest) |
+| `S3` | 4500000433, 7,200 kg (the late remainder only) | 100102, Rp152,629,554 (the 100109 split is #2: 100102's MINBM raises its 4,700 kg part to 5,000 kg, "MOQ +300 kg") | 100105 | 100102 |
 | `all` | 4500000431, then 4500000433, then 4500000432 | the three rows above, identical | 100105 | 100109, 100102, 100102 |
+
+Every table also ends with the MOQ rule line (proposal item 12): an order below a supplier's
+MINBM is raised to MINBM and the extra kg counts as purchase cost (MINBM values simulated).
 
 Every table also ranks keeping the flagged PO as it is (NOTE "keep PO ... as it is, no new
 order", SPARE "-"): its own price (the revised Rp18,700 in S2), its expected arrival and its
@@ -301,8 +305,8 @@ Expected mean realised cost, seed 42, 1,000 runs, posterior fallback (simulated 
 |---|---|---|---|---|
 | S1 | Rp177,900,000 (100109) | Rp214,700,000 (100105) | Rp177,900,000 (100109, same as GESIT) | Rp1,119,950,000 |
 | S2 | Rp158,300,000 (keep PO 4500000432) | Rp179,800,000 (100105) | Rp147,500,000 (100102) | same as GESIT |
-| S3 | Rp131,384,167 (100109 2,500 kg + 100102 4,700 kg) | Rp165,840,000 (100105) | Rp132,780,000 (100102) | Rp878,430,000 |
-| TOTAL | Rp467,584,167 | Rp560,340,000 | Rp458,180,000 | Rp2,156,680,000 |
+| S3 | Rp132,780,000 (100102, same as ALWAYS_FASTEST; MOQ rule, proposal item 12) | Rp165,840,000 (100105) | Rp132,780,000 (100102) | Rp878,430,000 |
+| TOTAL | Rp468,980,000 | Rp560,340,000 | Rp458,180,000 | Rp2,156,680,000 |
 
 With the real SAP-RPT-1.6 (step 7) GESIT picks 100108 for S3, and S3 becomes
 Rp208,950,000 for GESIT against Rp132,780,000 for ALWAYS_FASTEST: SAP-RPT predicts P(late)

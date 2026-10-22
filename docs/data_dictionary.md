@@ -174,6 +174,7 @@ off-panel supplier 100111. This is the candidate list for supplier scoring
 | WAERS | string | Currency, always `IDR`. |
 | LEAD_DAYS | days | Quoted lead time in calendar days. Arrival = today + LEAD_DAYS. |
 | AVAILABLE_KG_NEXT_30D | KG | Spare capacity = the supplier's monthly capacity minus what was ordered from it in the last 30 days, never below 0. If the needed quantity is larger, the supplier cannot cover the full order and a split order is evaluated (FR-SEL-2). |
+| MINBM | KG | Minimum order quantity (S/4 EINE-MINBM), from the per-supplier setting `MINBM_KG` in `data_gen/config.py`, not from the random generator: 1,000 kg for every supplier except 100102 at 5,000 kg (simulated, D-4). An order below MINBM is raised to MINBM and the extra kg counts as purchase cost; a supplier whose spare capacity is below MINBM cannot take an order (proposal item 12 in `docs/prd_change_proposals.md`). |
 | VALID_TO | date | Last day the quote is valid, QUOTE_DATE + 7 days. |
 
 ### inventory_asof.csv: stock position

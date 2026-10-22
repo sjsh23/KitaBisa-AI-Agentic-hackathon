@@ -20,6 +20,13 @@ either part is missing, so the split's expected stock-out days are the larger of
 the two parts' (a conservative choice). A supplier with no spare capacity is not
 a candidate at all.
 
+Minimum order quantity (MINBM, EINE-MINBM in S/4; built, waiting for team agreement,
+docs/prd_change_proposals.md item 12): every part of a new order below the supplier's
+MINBM is raised to MINBM when its spare capacity allows; the extra kilograms are
+purchase cost at its NETPR, with no credit for the extra stock (conservative). A
+supplier whose spare capacity is below MINBM cannot take an order: excluded as a full
+order (BELOW_MOQ), skipped as a split partner. A quote without MINBM counts as 0.
+
 Keeping the current PO is ranked in the same table (OPTION KEEP_CURRENT_PO, not
 yet in FR-SEL-1, proposed in docs/prd_change_proposals.md): the same formula with
 the PO's own price (the revised one after a price increase), its expected arrival
@@ -42,12 +49,16 @@ EXCLUDED_OFF_PANEL = "OFF_PANEL"                 # LFA1.ZZPANEL blank (see POL-2
 EXCLUDED_QUOTE_NOT_VALID = "QUOTE_NOT_VALID"     # today outside QUOTE_DATE..VALID_TO
 EXCLUDED_NO_SPARE_CAPACITY = "NO_SPARE_CAPACITY" # AVAILABLE_KG_NEXT_30D is 0
 EXCLUDED_DISRUPTED = "DISRUPTED_SUPPLIER"        # has a flagged PO in this detection run
+EXCLUDED_BELOW_MOQ = "BELOW_MOQ"                 # AVAILABLE_KG_NEXT_30D below MINBM
 
 OPTION_NEW_PO = "NEW_PO"              # buy the quantity from a backup supplier
 OPTION_KEEP = "KEEP_CURRENT_PO"       # keep the flagged PO as it is, no new order
 
 CANNOT_COVER_NOTE = "cannot cover full quantity"
 NEAR_TIE_PCT = 1.0   # expected cost gap to #1 below this many percent is a near tie
+MOQ_RULE_TEXT = ("MOQ rule: an order below a supplier's MINBM is raised to MINBM and the extra "
+                 "kg is counted as purchase cost; a supplier whose spare capacity is below MINBM "
+                 "is skipped. MINBM values simulated.")
 
 # d_late shrinkage: the supplier's late receipts count alongside this many pseudo-receipts
 # at the all-supplier average delay (same idea as the Beta prior in scoring.reliability).
@@ -88,6 +99,21 @@ def delay_when_late(delays: Iterable[int], pooled: float,
     return (sum(late) + prior_weight * pooled) / (len(late) + prior_weight)
 
 
+def minbm(quote: dict[str, Any]) -> float:
+    """The quote's minimum order quantity in kg; 0 when the quote has none (older files)."""
+    return float(quote.get("MINBM") or 0.0)
+
+
+def can_take(quote: dict[str, Any], kg: float) -> bool:
+    """True when the supplier can deliver `kg`, raised to its MINBM, from its spare capacity."""
+    return quote["AVAILABLE_KG_NEXT_30D"] >= max(float(kg), minbm(quote))
+
+
+def moq_text(extra_kg: float) -> str:
+    """The table mark for a MOQ round-up, for example "MOQ +300 kg"."""
+    return f"MOQ +{extra_kg:,.0f} kg"
+
+
 def exclusion_reason(quote: dict[str, Any], supplier: dict[str, Any] | None, today: str,
                      disrupted: Iterable[str] = ()) -> str | None:
     """FR-SEL-1: None when the quote is a candidate, otherwise the reason it is not."""
@@ -99,16 +125,26 @@ def exclusion_reason(quote: dict[str, Any], supplier: dict[str, Any] | None, tod
         return EXCLUDED_DISRUPTED
     if (quote.get("AVAILABLE_KG_NEXT_30D") or 0.0) <= 0.0:
         return EXCLUDED_NO_SPARE_CAPACITY
+    if quote["AVAILABLE_KG_NEXT_30D"] < minbm(quote):
+        return EXCLUDED_BELOW_MOQ
     return None
 
 
 def score_part(quote: dict[str, Any], qty: float, p_late: float, d_late: float, today: str,
                stockout: str) -> dict[str, Any]:
-    """Cost components of buying `qty` kg from one supplier (no downtime cost yet)."""
+    """Cost components of buying `qty` kg from one supplier (no downtime cost yet).
+
+    Below MINBM the order is raised to MINBM: MENGE is the ordered kg, NEEDED_KG what
+    the case needs from this supplier, and the extra kg is in PURCHASE_COST. The
+    caller checks `can_take` first.
+    """
     arrival = arrival_date(today, quote["LEAD_DAYS"])
+    ordered = max(float(qty), minbm(quote))
     return {
         "LIFNR": quote["LIFNR"],
-        "MENGE": float(qty),
+        "MENGE": ordered,
+        "NEEDED_KG": float(qty),
+        "MOQ_EXTRA_KG": ordered - float(qty),
         "NETPR": int(quote["NETPR"]),
         "LEAD_DAYS": int(quote["LEAD_DAYS"]),
         "AVAILABLE_KG": float(quote["AVAILABLE_KG_NEXT_30D"]),
@@ -116,7 +152,7 @@ def score_part(quote: dict[str, Any], qty: float, p_late: float, d_late: float, 
         "SLACK_DAYS": days_between(stockout, arrival),   # positive = arrives before stock-out
         "P_LATE": p_late,
         "D_LATE": d_late,
-        "PURCHASE_COST": int(round(qty * quote["NETPR"])),
+        "PURCHASE_COST": int(round(ordered * quote["NETPR"])),
         "STOCKOUT_DAYS": expected_stockout_days(arrival, stockout, p_late, d_late),
     }
 
@@ -136,7 +172,8 @@ def finish_row(parts: list[dict[str, Any]], downtime_cost_per_day: int) -> dict[
         "P_LATE": round(main["P_LATE"], 4),
         "P_LATE_PCT": round(main["P_LATE"] * 100, 1),
         "D_LATE": round(main["D_LATE"], 2),
-        "MENGE": main["MENGE"],                 # kg from this supplier
+        "MENGE": main["MENGE"],                 # kg ordered from this supplier (MOQ included)
+        "MOQ_EXTRA_KG": main.get("MOQ_EXTRA_KG", 0.0),   # kg above the need, from MINBM
         "AVAILABLE_KG": main["AVAILABLE_KG"],   # its spare capacity in this run
         "COVERS_FULL_QTY": len(parts) == 1,
         "CAPACITY_NOTE": None if len(parts) == 1 else CANNOT_COVER_NOTE,
@@ -151,6 +188,7 @@ def finish_row(parts: list[dict[str, Any]], downtime_cost_per_day: int) -> dict[
 def _split_summary(part: dict[str, Any]) -> dict[str, Any]:
     """The second supplier of a split order, as shown in the table."""
     return {"LIFNR": part["LIFNR"], "MENGE": part["MENGE"], "NETPR": part["NETPR"],
+            "MOQ_EXTRA_KG": part.get("MOQ_EXTRA_KG", 0.0),
             "ARRIVAL": part["ARRIVAL"], "P_LATE": round(part["P_LATE"], 4),
             "PURCHASE_COST": part["PURCHASE_COST"],
             "EXPECTED_STOCKOUT_DAYS": round(part["STOCKOUT_DAYS"], 2)}
@@ -159,11 +197,15 @@ def _split_summary(part: dict[str, Any]) -> dict[str, Any]:
 def best_partner(remainder: float, short_lifnr: str, quotes: dict[str, dict[str, Any]],
                  p_late: dict[str, float], d_late: dict[str, float], today: str,
                  stockout: str, downtime_cost_per_day: int) -> dict[str, Any] | None:
-    """The other candidate with the lowest expected cost for `remainder` kg, or None."""
+    """The other candidate with the lowest expected cost for `remainder` kg, or None.
+
+    A partner must take the remainder raised to its MINBM (`can_take`); one whose spare
+    capacity is below MINBM is skipped and the next one is tried.
+    """
     options = [
         score_part(q, remainder, p_late[lifnr], d_late[lifnr], today, stockout)
         for lifnr, q in quotes.items()
-        if lifnr != short_lifnr and q["AVAILABLE_KG_NEXT_30D"] >= remainder
+        if lifnr != short_lifnr and can_take(q, remainder)
     ]
     if not options:
         return None
@@ -209,8 +251,8 @@ def score_candidates(quotes: dict[str, dict[str, Any]], qty: float, p_late: dict
     rows = []
     for lifnr, quote in quotes.items():
         available = quote["AVAILABLE_KG_NEXT_30D"]
-        if available <= 0:
-            continue   # nothing to offer; `exclusion_reason` normally removed it already
+        if available <= 0 or available < minbm(quote):
+            continue   # cannot take an order; `exclusion_reason` normally removed it already
         if available >= qty:
             parts = [score_part(quote, qty, p_late[lifnr], d_late[lifnr], today, stockout)]
         else:

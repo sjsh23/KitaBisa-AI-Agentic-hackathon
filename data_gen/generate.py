@@ -232,6 +232,7 @@ def build_quotes_and_inventory(world: World, po: pd.DataFrame):
                       "NETPR": world.quote_price(l, m.matnr, as_of), "PEINH": 1,
                       "WAERS": "IDR", "LEAD_DAYS": s.lead_days,
                       "AVAILABLE_KG_NEXT_30D": max(0.0, s.capacity_kg_month - recent),
+                      "MINBM": C.MINBM_KG.get(l, C.MINBM_DEFAULT_KG),
                       "VALID_TO": (as_of + 7 * DAY).date()})
         open_qty = po[(po.MATNR == m.matnr) & ~po.CLOSED].MENGE.sum()
         stock = m.daily_usage_kg * m.stock_at_as_of_days

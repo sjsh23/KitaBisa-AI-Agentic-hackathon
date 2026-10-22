@@ -134,6 +134,13 @@ SUPPLIERS = [
 # Extra drop in on-time probability per 100% of over-booking in a rolling 30 days.
 CAPACITY_PENALTY = 0.35
 
+# Minimum order quantity per supplier in kg (S/4 EINE-MINBM), written to quotes_asof.MINBM.
+# A fixed setting, not drawn by the random generator, so every other column and file stays
+# byte-identical. Simulated assumption (D-4); scoring rule in docs/prd_change_proposals.md
+# item 12 (built, waiting for team agreement).
+MINBM_DEFAULT_KG = 1_000.0
+MINBM_KG = {"100102": 5_000.0}
+
 
 @dataclass
 class Buyer:

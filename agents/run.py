@@ -36,6 +36,7 @@ REASON_LABELS = {"PREDICTED_LATE": "predicted late", "DELAY_NOTICE": "delay noti
                  "PRICE_INCREASE": "price increase", "CAPACITY_SHORTFALL": "capacity shortfall"}
 EXCLUDED_LABELS = {"OFF_PANEL": "off the approved panel", "QUOTE_NOT_VALID": "quote not valid today",
                    "NO_SPARE_CAPACITY": "no spare capacity",
+                   "BELOW_MOQ": "spare capacity below MOQ",
                    "DISRUPTED_SUPPLIER": "has a PO flagged by Detection, so no new order from it "
                                          "(EXCLUDE_FLAGGED_SUPPLIERS)"}
 
@@ -137,10 +138,14 @@ def _note(row: dict[str, Any]) -> str:
     if row.get("OPTION") == supplier_score.OPTION_KEEP:
         return f"keep PO {row['KEEP_EBELN']} as it is, no new order"
     marks = [m for m, on in (("cheapest", row["IS_CHEAPEST"]), ("fastest", row["IS_FASTEST"])) if on]
+    if row.get("MOQ_EXTRA_KG"):   # order raised to the supplier's MINBM (proposal item 12)
+        marks.append(supplier_score.moq_text(row["MOQ_EXTRA_KG"]))
     if row["SPLIT_WITH"]:   # FR-SEL-2: never ranked for more than it can supply
         part = row["SPLIT_WITH"]
+        moq = (f" ({supplier_score.moq_text(part['MOQ_EXTRA_KG'])})"
+               if part.get("MOQ_EXTRA_KG") else "")
         marks.append(f"{row['CAPACITY_NOTE']}: split {row['MENGE']:,.0f} kg here + "
-                     f"{part['MENGE']:,.0f} kg from {part['LIFNR']} at Rp{part['NETPR']:,}")
+                     f"{part['MENGE']:,.0f} kg from {part['LIFNR']} at Rp{part['NETPR']:,}{moq}")
     return ", ".join(marks) or "-"
 
 
@@ -202,6 +207,7 @@ def format_case(case: dict[str, Any]) -> list[str]:
     lines.append("Cheapest tie-break: on an equal NETPR, fewer OUT d first, then more SPARE kg, "
                  "then the lower LIFNR.")
     lines.append(supplier_score.fastest_rule_text())
+    lines.append(supplier_score.MOQ_RULE_TEXT)
     if table.get("P_LATE_RULE"):   # reliability blend on (scoring.reliability.BLEND_RULE_TEXT)
         lines += [table["P_LATE_RULE"], p_late_sources_text(case)]
     if table.get("KEEP"):

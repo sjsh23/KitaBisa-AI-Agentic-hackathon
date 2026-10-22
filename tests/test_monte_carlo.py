@@ -92,7 +92,9 @@ def test_strategies_match_the_real_recommendation(built):
                                    mc.ALWAYS_FASTEST: "100102 8,000 kg",
                                    mc.KEEP_CURRENT_PO: "keep PO 4500000432"}
     assert labels(cases["S3"]) == {mc.GESIT_RPT_ONLY: "100108 7,200 kg",
-                                   mc.GESIT_LEARNING: "100109 2,500 kg + 100102 4,700 kg",
+                                   # MOQ (proposal item 12): 100102's MINBM 5,000 kg raises the
+                                   # 100109 2,500 kg + 100102 4,700 kg split above 100102 alone.
+                                   mc.GESIT_LEARNING: "100102 7,200 kg",
                                    mc.ALWAYS_CHEAPEST: "100105 7,200 kg",
                                    mc.ALWAYS_FASTEST: "100102 7,200 kg",
                                    mc.KEEP_CURRENT_PO: "keep PO 4500000433"}
