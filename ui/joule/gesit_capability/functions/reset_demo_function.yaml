@@ -1,12 +1,21 @@
 action_groups:
-  - actions:
-      - type: api-request
-        method: POST
-        system_alias: GESIT_API
-        path: /reset
-        result_variable: apiResponse
-      - type: message
-        message:
-          type: text
-          markdown: true
-          content: "<? apiResponse.body.SUMMARY ?>"
+- actions:
+  - type: api-request
+    method: POST
+    system_alias: GESIT_API
+    path: /reset
+    result_variable: apiResponse
+  - type: message
+    message:
+      type: quickReplies
+      content:
+        title: <? apiResponse.body.SUMMARY ?>
+        buttons:
+        - title: Run scenario S1
+          value: Run GESIT on scenario S1
+        - title: Run scenario S2
+          value: Run GESIT on scenario S2
+        - title: Run scenario S3
+          value: Run GESIT on scenario S3
+        - title: Is GESIT ready?
+          value: Is GESIT ready?
