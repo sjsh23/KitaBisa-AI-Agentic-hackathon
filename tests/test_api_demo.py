@@ -173,9 +173,17 @@ def test_evaluation_from_the_summary_file(client):
     assert (f"cheaper in {fast['CHEAPER_IN']}, equal in {fast['EQUAL_IN']}, higher in "
             f"{fast['OF'] - fast['CHEAPER_IN'] - fast['EQUAL_IN']} of {n} worlds") in text
     assert "(simulated)" in text and "proven" not in text.lower()
+    assert ("GESIT matches the best simple rule on cost without being told which rule to use, "
+            "beats always-cheapest and keeping the PO, and adds what a rule cannot: an "
+            "explanation, policy checks, a human approval and an audit trail.") in text
+    assert "not a lower cost in every world" not in text
     md = data["TABLE_MD"]
     assert md.count("\n|") >= 6 and md.endswith("All numbers simulated.")
     assert all(line.count("|") == 5 for line in md.splitlines() if line.startswith("|"))
+    first = md.splitlines()[2]
+    assert first == (f"| GESIT with learning | {ev['TRACKED_TOTAL_JUTA']['GESIT_LEARNING']:,.1f} "
+                     "| baseline (compared against) | 0.0 |")
+    assert "| - |" not in md
 
 
 def test_evaluation_missing_file_is_404(client, monkeypatch, tmp_path):

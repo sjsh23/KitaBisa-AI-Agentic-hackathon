@@ -718,8 +718,9 @@ def evaluation_summary(data: dict[str, Any]) -> str:
         f"{juta_sim(tracked['GESIT_LEARNING'])}, always fastest "
         f"{juta_sim(tracked['ALWAYS_FASTEST'])}, always cheapest "
         f"{juta_sim(tracked['ALWAYS_CHEAPEST'])}.",
-        "The value is the explanation, the policy checks and the human decision, not a lower cost "
-        "in every world.",
+        "GESIT matches the best simple rule on cost without being told which rule to use, beats "
+        "always-cheapest and keeping the PO, and adds what a rule cannot: an explanation, policy "
+        "checks, a human approval and an audit trail.",
     ])
 
 
@@ -732,8 +733,10 @@ def evaluation_md(data: dict[str, Any]) -> str:
              "(Rp juta) |", "|---|---|---|---|"]
     for key, name in EVAL_NAMES.items():
         v = vs.get(key)
-        counts = (f"{v['CHEAPER_IN']} of {n} worlds, equal in {v['EQUAL_IN']}" if v else "-")
-        gap = (f"{v['MEAN_DIFF_JUTA']:+,.1f}" if v else "-")
+        # GESIT with learning is the row the others are compared against, not missing data
+        counts = (f"{v['CHEAPER_IN']} of {n} worlds, equal in {v['EQUAL_IN']}" if v
+                  else "baseline (compared against)")
+        gap = (f"{v['MEAN_DIFF_JUTA']:+,.1f}" if v else "0.0")
         lines.append(f"| {name} | {tracked[key]:,.1f} | {counts} | {gap} |")
     lines += ["", "Mean gap = GESIT with learning minus the strategy, averaged over the worlds; "
                   "negative means GESIT costs less.", MD_SIMULATED]
