@@ -1,0 +1,19 @@
+parameters:
+  - name: ebeln
+  - name: reason
+action_groups:
+  - actions:
+      - type: api-request
+        method: POST
+        system_alias: GESIT_API
+        path: "/approvals/<? ebeln ?>/reject"
+        headers:
+          Content-Type: application/json
+        body: >
+          {"as": "MANAGER01", "reason": "<? reason ?>"}
+        result_variable: apiResponse
+      - type: message
+        message:
+          type: text
+          markdown: true
+          content: "<? apiResponse.body.SUMMARY ?>"

@@ -1,4 +1,4 @@
-description: Show the GESIT purchase orders that wait for the procurement manager's approval.
+description: List the GESIT purchase orders that are waiting for approval. Use only when the user wants to see or list pending approvals. This never approves or rejects anything.
 target:
   name: pending_approvals_function
   type: function

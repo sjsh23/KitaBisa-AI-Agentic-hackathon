@@ -1,3 +1,5 @@
+parameters:
+  - name: scenario_id
 action_groups:
   - actions:
       - type: api-request
@@ -7,7 +9,7 @@ action_groups:
         headers:
           Content-Type: application/json
         body: >
-          {"scenario": "S1", "llm": true}
+          {"scenario": "<? scenario_id ?>", "llm": true}
         result_variable: apiResponse
       - type: message
         message:

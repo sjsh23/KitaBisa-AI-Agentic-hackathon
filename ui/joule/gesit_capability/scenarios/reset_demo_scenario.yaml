@@ -1,0 +1,4 @@
+description: Reset the GESIT demo. Clear the draft purchase orders, the plan log and the decision log.
+target:
+  name: reset_demo_function
+  type: function
