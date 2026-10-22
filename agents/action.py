@@ -27,6 +27,12 @@ line (OLD_PO_TEXT), so a manager's reject hours later can name the next option f
 the buyer from the same table, without scoring again (`tools.action.reject_po`,
 proposal item 11).
 
+One open draft per flagged PO (proposal item 14): when a case is drafted again (another
+run, or the buyer's override) while an older draft for the same flagged PO is still DRAFT
+or PENDING_APPROVAL, the older one becomes SUPERSEDED, with an event naming the new draft,
+so a manager can never approve both and buy twice. The parts of one split draft never
+supersede each other.
+
 The agent never releases a PO: `release_po` is an approval tool and POL-4 denies
 it to agents. Only a human principal releases (`human_approvals` stands in for
 the clicks in the terminal). No LLM is used here; every value comes from the
@@ -37,7 +43,7 @@ from __future__ import annotations
 from typing import Any
 
 from adapters import CsvAdapter, PoStore, default_adapter
-from adapters.po_store import STATUS_RELEASED
+from adapters.po_store import OPEN_STATUSES, STATUS_RELEASED, STATUS_SUPERSEDED
 from policy import AGENT, APPROVAL_THRESHOLD_IDR, Principal, authorize, buyer, manager
 from scoring import disruption, supplier_score
 from tools import draft_po, release_po, submit_for_approval
@@ -178,7 +184,8 @@ class ActionAgent:
             owner_id = buyer_id or buyers[case["EBELN"]]
             out = {"EBELN": case["EBELN"], "LIFNR": case["LIFNR"], "BUYER": owner_id,
                    "QTY": case["QTY"], "ORDERS": [], "NOTE": None,
-                   "OLD_PO": old_po_action(case), "CHOSEN": None, "OVERRIDE_ID": None}
+                   "OLD_PO": old_po_action(case), "CHOSEN": None, "OVERRIDE_ID": None,
+                   "SUPERSEDED": []}
             if not case["SCORING"]["CANDIDATES"]:
                 out["NOTE"] = "no candidate supplier, nothing drafted; handed back to the buyer"
                 cases.append(out)
@@ -201,10 +208,14 @@ class ActionAgent:
             parts = order_parts(row)
             saved = {"RANKING": ranking_snapshot(case), "DRAFT_RANK": row["RANK"],
                      "OLD_PO_TEXT": (out["OLD_PO"] or {}).get("TEXT")}
+            older = self.open_drafts_for(case["EBELN"])   # before this case's new drafts
             for i, part in enumerate(parts, 1):
                 out["ORDERS"].append(self._draft_and_route(
                     case, part, reason_text(case, i, len(parts), row, override_id),
                     buyer(owner_id), steps, saved))
+            new = [o["EBELN"] for o in out["ORDERS"] if o["EBELN"]]
+            if new:
+                out["SUPERSEDED"] = self._supersede(older, new, steps)
             cases.append(out)
         return {
             "AGENT": AGENT_NAME,
@@ -217,6 +228,27 @@ class ActionAgent:
             "CASES": cases,
             "HANDED_BACK": handed_back(cases),   # FR-SUP-2: a human decides next
         }
+
+    def open_drafts_for(self, replaces: str) -> list[str]:
+        """EBELNs of the drafts still DRAFT or PENDING_APPROVAL that replace `replaces`."""
+        return [po["EBELN"] for po in self.store.all()
+                if po.get("REPLACES_EBELN") == replaces and po["STATUS"] in OPEN_STATUSES]
+
+    def _supersede(self, older: list[str], new: list[str],
+                   steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Mark the older open drafts SUPERSEDED by the new ones (never releasable)."""
+        done = []
+        for ebeln in older:
+            by = ", ".join(new)
+            self.store.update(ebeln, {"TOOL": "supersede", "BY": self.principal.id,
+                                      "ROLE": self.principal.role, "RESULT": STATUS_SUPERSEDED,
+                                      "POLICY": None, "SUPERSEDED_BY": new,
+                                      "REASON": f"draft PO {by} replaces the same flagged PO"},
+                              STATUS=STATUS_SUPERSEDED, SUPERSEDED_BY=new)
+            steps.append({"TOOL": "supersede", "INPUT": {"ebeln": ebeln, "by": new},
+                          "RESULT": STATUS_SUPERSEDED})
+            done.append({"EBELN": ebeln, "SUPERSEDED_BY": new})
+        return done
 
     @staticmethod
     def _chosen_row(case: dict[str, Any],

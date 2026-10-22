@@ -485,6 +485,58 @@ restart or restage empties them (fine for the demo, `/reset` does the same). One
 The approver comes from the request body (`"as"`); in the deployed version it should come from
 the Joule login (item 11).
 
+## 14. Proposed PRD change: one open draft per flagged PO (FR-ACT-1, FR-ACT-2)
+
+**Status:** built, waiting for team agreement (22 Oct 2026). `agents/action.py`,
+`adapters/po_store.py`, `agents/approvals.py`, `tools/action.py`.
+
+**Why.** In the Joule end-to-end test of 22 Oct two overrides for S1 made two pending drafts
+that both replace PO 4500000431, so a manager could approve both and buy the sugar twice.
+
+**What was built.** When a case is drafted again (another run or the buyer's override) while
+an older draft for the same flagged PO (REPLACES_EBELN) is still DRAFT or PENDING_APPROVAL,
+the Action agent sets the older draft to the new status SUPERSEDED, with SUPERSEDED_BY and an
+event naming the new draft. A SUPERSEDED draft can never be released: approve and reject
+give an error (HTTP 409 in the API, "PO X is SUPERSEDED by draft PO Y and can never be
+released"), and GET /approvals leaves it out. SUMMARY says "Draft PO Y supersedes draft PO
+X." A REJECTED or RELEASED draft is never superseded, and the two parts of one split draft
+never supersede each other. In `agents.run` the PO store is new on every run, so nothing
+changes there.
+
+**Proposed PRD text.** Add to FR-ACT-1: "At most one open draft per flagged PO: a new draft
+for the same PO supersedes an older one that is still DRAFT or PENDING_APPROVAL; a
+superseded draft can never be released."
+
+## 15. Chat behaviour of the API for Joule (FR-ACT-3, FR-INT-4, section 8, section 12)
+
+**Status:** built, waiting for team agreement (22 Oct 2026). `integrations/api/`,
+`ui/joule/`.
+
+- **Quoted user text.** A reject reason and an override justification are quoted exactly as
+  received in SUMMARY ('Reason recorded: "..."', 'Justification recorded: "..."'), and a
+  short one is quoted in the 422 ('Reason "too high" has 8 characters, at least 20 are
+  needed.'). The 20-character rule stays in the API; Joule slots copy the user's words.
+- **NEXT_STEPS.** Every SUMMARY ends with the exact phrases the user can type next, which
+  match the Joule scenarios: "Approve purchase order N", "Approve purchase order N as the
+  buyer", "Reject purchase order N. Reason: ...", "Override scenario S1 with supplier X.
+  Justification: ...", "Run GESIT on scenario S1", "Show pending approvals", "Show integrity
+  flags".
+- **Buyer one-click in chat (FR-ACT-3).** POST /approvals/{ebeln}/approve takes "as":
+  "BUYER", meaning the draft's own buyer (ERNAM); `approve_po` now also releases a DRAFT,
+  and `release_po`'s policy checks decide as before (a buyer above the threshold is denied
+  by POL-1). In the deployed version the buyer comes from the Joule login (item 11).
+- **PLAN_MD.** POST /run returns the supervisor's steps as Markdown (agent, status, seconds,
+  "SAP-RPT: called" or "cached", model texts), under 1 KB, shown in Joule after the table.
+- **GET /integrity (FR-INT-4).** The flagged buyer and supplier pairs and the latest five
+  overrides, SUMMARY and TABLE_MD, in neutral words ("a statistic for the manager to
+  review, not a finding; it never blocks a PO or a buyer").
+- **Explanation in TABLE_MD.** The checked model explanation under each case's table
+  ("**Why:**"); to stay under 3 KB the rows are cut to #1, keep, cheapest and fastest first,
+  then explanations are left out from the last case backwards.
+- **Why nothing can be ordered.** When a case has no new order, SUMMARY says why, with counts
+  per reason, including suppliers that cannot cover the quantity even as a split
+  (`score_suppliers` reports them as CANNOT_COVER; no scoring change).
+
 ## PRD Changelog draft
 
 Lines to add to the Changelog at the end of `PRD.md` once the team agrees:
@@ -496,3 +548,5 @@ Lines to add to the Changelog at the end of `PRD.md` once the team agrees:
 - 2026-10-15: FR-SEL-2: split orders made explicit ("cannot cover full quantity", kilograms add up to Q, never ranked above spare capacity); in a run with several flagged POs, the recommended order reserves spare capacity for later cases. The S1 versus `all` difference for 100109 (12,500 kg spare) was this reservation, now shown in the output.
 - 2026-10-22: Section 6, FR-SEL-1, FR-SEL-2, section 8: minimum order quantity (quotes_asof.MINBM, simulated: 1,000 kg, 5,000 kg for 100102); an order part below MINBM is raised to MINBM and the extra kg counts as purchase cost; a supplier with spare capacity below MINBM is skipped (item 12).
 - 2026-10-22: Sections 5, 13, 17: HTTP API (`integrations/api`, FastAPI on Cloud Foundry) as the bridge between Joule and the supervisor, approvals and Integrity Guard, until AgentCore is set up (item 13).
+- 2026-10-22: FR-ACT-1: at most one open draft per flagged PO; a new draft supersedes an older DRAFT or PENDING_APPROVAL one, which can never be released (item 14).
+- 2026-10-22: FR-ACT-3, FR-INT-4, section 8: the API quotes user text exactly, ends every SUMMARY with NEXT_STEPS, takes "as": "BUYER" for the buyer's one-click, returns PLAN_MD and GET /integrity, and shows the explanation in TABLE_MD (item 15).

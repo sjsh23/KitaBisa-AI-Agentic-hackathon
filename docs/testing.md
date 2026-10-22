@@ -68,7 +68,7 @@ git diff --cached --name-only
 py -3.11 -m pytest -q
 ```
 
-Expected: `367 passed` (22 October 2026). The tests never call the network: SAP-RPT, SAP AI Core and the reasoning models are replaced by fakes.
+Expected: `398 passed` (22 October 2026). The tests never call the network: SAP-RPT, SAP AI Core and the reasoning models are replaced by fakes.
 
 | Test file | What it proves | Requirements |
 |---|---|---|
@@ -87,6 +87,10 @@ Expected: `367 passed` (22 October 2026). The tests never call the network: SAP-
 | `tests/test_moq.py` | MINBM in the quotes (1,000 kg, 5,000 kg for 100102, simulated); an order part below MINBM raised to MINBM with the extra kg in the purchase cost and a "MOQ +300 kg" mark, risk cost unchanged; spare below MINBM excluded as a full order (BELOW_MOQ) and skipped as a split partner; MINBM equal to the need and a quote without MINBM change nothing; keep row unchanged; reservations and drafts use the ordered kg (NETWR incl. the round-up); the explanation facts name the round-up and pass the check | FR-SEL-1, FR-SEL-2, FR-ACT-1, POL-1, D-3 |
 | `tests/test_api.py` | The HTTP API with FastAPI's TestClient: no start without GESIT_API_KEY, /health without a key, 401 on every other endpoint without or with a wrong key; /run for S1, S2, S3, all and scan (plan steps with STATUS and SECONDS, top 3 rows plus the keep row, MOQ mark, drafts with NEXT, SUMMARY of 2 to 4 sentences with every amount marked simulated); /run/start then /run/{job_id}; /approvals; 403 on a policy deny (POL-1, POL-4); 409 on a double approve and a reject after release; 422 on a short reason and a short justification; /override logs, drafts and returns the integrity flags; /reset then /approvals empty; every response under 20 KB; SUMMARY wording (lowest-price supplier with its main driver, 1 PO waits and 2 POs wait); TABLE_MD columns, Rp juta with one decimal, the simulated line, MOQ and split marks, the cheapest and fastest rows added with their real rank when outside the top 3 (every supplier SUMMARY names), a heading per PO and the 3 KB limit | FR-SUP-1 to FR-SUP-3, FR-ACT-2, FR-INT-1, POL-1, POL-4, D-3, NFR-4 |
 | `tests/test_speed.py` | Same Detection and Supplier Evaluation output with and without the SAP-RPT cache (fake SAP-RPT), cache hit and miss (one cell, another model id), no credential in the key, copies returned, POST /reset keeps the cache; the SAP-RPT token shared by clients and fetched again after expiry, the AI Core token fetched once by 8 threads and refreshed; explanations in parallel with the same order and checks as one by one, the Detection text in parallel with Supplier Evaluation and the same report as agents.run; plan log "SAP-RPT: called" then "cached" with the calls and their seconds; warm-up does not block /health, finishes offline with its failures recorded, fills the cache for S1, S2, S3 and all | NFR-1, FR-DET-1, FR-SEL-4, D-3 |
+| `tests/test_api_fixes.py` | Quoted reason and justification (422 and success); one open draft per flagged PO (second override supersedes the first, 409 on a superseded draft, left out of /approvals, rejected drafts left alone, split parts never supersede each other); override SUMMARY with the gap, the flagged pair by name, neutral words; `all` repeats no sentence and no table; NEXT_STEPS on every endpoint; buyer approval with "as": "BUYER" and a clear 403 above the threshold; PLAN_MD under 1 KB; GET /integrity; the explanation under each table and rows cut before it is dropped | FR-ACT-1 to FR-ACT-3, FR-INT-1 to FR-INT-4, FR-SEL-4, D-3 |
+| `tests/test_api_edge_cases.py` | C1 to C6 below, on modified copies of the data in a temp folder | FR-SEL-1, FR-SEL-2, FR-ACT-1, FR-ACT-2, POL-2, FR-INT-1, D-1 |
+| `tests/test_api_flows.py` | One scripted chat: reset, run S1, approvals, short and valid reject, short and valid override, the same override again (supersedes), run S3, buyer approval, run S2 (keep), integrity, reset | PRD section 12 |
+| `tests/test_joule_files.py` | ui/joule: every file parses, every scenario targets an existing function, every slot copies the user's words and asks, every function calls a real API route and shows SUMMARY | Joule UI |
 | `tests/test_supervisor.py` | Plan steps for S1, S2, S3, all and scan (Integrity Guard before Action with `--choose`); the graph is a Strands Graph of Python nodes with fixed edges; each stop rule (nothing flagged, keep everywhere, no candidate for one case and for every case, policy deny hands back to the manager, short justification); a failed step is marked FAILED; the supervisor never calls `release_po`; the plan log line is JSON with every step, STATUS and SECONDS; the CLI prints the `agents.run` report after the plan | FR-SUP-1 to FR-SUP-3, FR-ACT-2, POL-4 |
 | `tests/test_approvals.py` | PO store saved and loaded by a second store object, numbers continue from the file, memory mode writes nothing, clear; S1 across two processes approved and rejected; next option from the saved table (rank 2, rank 1 after a rejected override, keep when it ranked higher); reject as its own decision log entry, overrides unchanged; agent denied approve and reject (POL-4), buyer denied reject (POL-1), reason under 20 characters refused; every double action changes nothing; CLI list, reject, approve | FR-ACT-2, FR-ACT-3, POL-1, POL-4, FR-INT-1 |
 
@@ -336,6 +340,30 @@ after that, measured locally on 22 Oct 2026 with the real services:
 Every number, ranked table, draft and SUMMARY was identical before and after; the model texts
 are written live on every run. Without the warm-up (`GESIT_WARMUP=0`) the first S1 run took
 12.6 s and the next one 4.5 s.
+
+### Edge cases (Q&A, tested offline in `tests/test_api_edge_cases.py`)
+
+Each test uses a modified copy of `data_gen/out` in a temporary folder (GESIT_DATA_DIR);
+the tracked data never changes. All numbers simulated.
+
+- **C1, no backup can cover the quantity, not even as a split.** GESIT keeps the PO,
+  drafts nothing and hands back to the buyer; SUMMARY says why ("7 that cannot cover
+  10,000 kg, not even as a split, ..."). Nothing crashes.
+- **C2, every backup is below its minimum order quantity.** Each is excluded with
+  BELOW_MOQ ("spare capacity below their MOQ"), visible in SUMMARY and CASES[].EXCLUDED;
+  GESIT keeps the PO.
+- **C3, the main supplier delivers only part (S3).** The old PO is cut to the part that
+  still arrives on time (12,000 to 4,800 kg) and only the 7,200 kg remainder is bought.
+- **C4, the supplier leaves the approved panel before release (POL-2).** The draft stays
+  PENDING_APPROVAL; even the manager's approve is denied by POL-2 (HTTP 403). Never released.
+- **C5, the manager rejects, then the buyer overrides to the next option.** The new draft
+  supersedes nothing (the first was rejected), goes through policy again (POL-1, manager)
+  and is the only one pending.
+- **C6, two flagged POs want the same supplier's spare capacity.** Capacity goes in
+  Detection's urgency order: the most urgent PO reserves first, later cases only see what
+  is left (RESERVED_FOR in each case).
+- **Shelf life.** Out of scope: GESIT does not model shelf life or expiry of sugar stock
+  (raised with the team; no requirement in the PRD).
 
 ### Monte Carlo against baselines (FR-EVA-4)
 

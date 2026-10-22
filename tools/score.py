@@ -85,6 +85,10 @@ def score_suppliers(matnr: str, qty: float, need_by: str, exclude_lifnr: Iterabl
                                              downtime, keep=keep)          # FR-SEL-2, FR-SEL-3
     for row in ranked:   # track record behind P_LATE and D_LATE, so a thin one is visible
         row["N_RECEIPTS"] = len(receipts[row["LIFNR"]])
+    # Candidates with no row: they cannot cover the quantity, not even as a split (reported
+    # so a case without any new order can say why; nothing is scored differently).
+    ranked_lifnrs = {r["LIFNR"] for r in ranked if r["OPTION"] == supplier_score.OPTION_NEW_PO}
+    not_ranked = sorted(set(candidates) - ranked_lifnrs)
     return {
         "MATNR": matnr,
         "QTY": float(qty),
@@ -101,6 +105,7 @@ def score_suppliers(matnr: str, qty: float, need_by: str, exclude_lifnr: Iterabl
         "P_LATE_SOURCES": sources,   # per candidate LIFNR: P_RPT, P_POST, P_USED (blend only)
         "CANDIDATES": ranked,
         "EXCLUDED": sorted(excluded, key=lambda e: e["LIFNR"]),
+        "CANNOT_COVER": not_ranked,
         "RECOMMENDED": ranked[0]["LIFNR"] if ranked else None,
         "RECOMMENDED_OPTION": ranked[0]["OPTION"] if ranked else None,
         "KEEP": next((r for r in ranked if r["OPTION"] == supplier_score.OPTION_KEEP), None),

@@ -24,6 +24,10 @@ STATUS_DRAFT = "DRAFT"
 STATUS_PENDING = "PENDING_APPROVAL"
 STATUS_RELEASED = "RELEASED"
 STATUS_REJECTED = "REJECTED"
+# Replaced by a newer draft for the same flagged PO before anyone decided; never releasable
+# (one open draft per flagged PO, docs/prd_change_proposals.md item 14).
+STATUS_SUPERSEDED = "SUPERSEDED"
+OPEN_STATUSES = frozenset({STATUS_DRAFT, STATUS_PENDING})
 
 PO_STORE_ENV = "PO_STORE_PATH"
 DEFAULT_PO_STORE_NAME = "po_store.json"

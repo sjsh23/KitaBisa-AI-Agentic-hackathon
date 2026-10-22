@@ -1,0 +1,17 @@
+action_groups:
+  - actions:
+      - type: api-request
+        method: GET
+        system_alias: GESIT_API
+        path: /integrity
+        result_variable: apiResponse
+      - type: message
+        message:
+          type: text
+          markdown: true
+          content: "<? apiResponse.body.SUMMARY ?>"
+      - type: message
+        message:
+          type: text
+          markdown: true
+          content: "<? apiResponse.body.TABLE_MD ?>"

@@ -23,7 +23,8 @@ import argparse
 from typing import Any
 
 from adapters import PoStore, default_adapter
-from adapters.po_store import STATUS_PENDING, po_store_path
+from adapters.po_store import (STATUS_DRAFT, STATUS_PENDING, STATUS_SUPERSEDED,
+                               po_store_path)
 from policy import Principal
 from scoring import supplier_score
 from tools import list_pending_approvals, reject_po, release_po
@@ -60,14 +61,26 @@ def format_pending(listing: dict[str, Any]) -> str:
 
 
 def approve_po(store: PoStore, ebeln: str, principal: Principal) -> dict[str, Any]:
-    """The manager's approve: `release_po` on a PENDING_APPROVAL PO (used by this CLI and the
-    HTTP API). ValueError when the PO is in another status (nothing changed); KeyError when
-    GESIT did not create it. Returns the release_po result plus the PO as it was."""
+    """Approve: `release_po` on a PENDING_APPROVAL PO (the manager) or a DRAFT (the buyer's
+    one-click within policy, FR-ACT-3); `release_po`'s policy check decides who may (used by
+    this CLI and the HTTP API). ValueError when the PO is in another status (nothing
+    changed); KeyError when GESIT did not create it. Returns the release_po result plus the
+    PO as it was."""
     po = store.get(ebeln)
-    if po["STATUS"] != STATUS_PENDING:
-        raise ValueError(f"PO {ebeln} is {po['STATUS']}, only a {STATUS_PENDING} PO can be "
-                         "approved; nothing changed.")
+    if po["STATUS"] not in (STATUS_PENDING, STATUS_DRAFT):
+        raise ValueError(wrong_status_text(po, "approved"))
     return {**release_po(ebeln, store=store, principal=principal), "PO": po}
+
+
+def wrong_status_text(po: dict[str, Any], verb: str) -> str:
+    """Why a PO cannot be approved or rejected now; a SUPERSEDED one names its successor."""
+    if po["STATUS"] == STATUS_SUPERSEDED:
+        by = ", ".join(po.get("SUPERSEDED_BY") or [])
+        return (f"PO {po['EBELN']} is SUPERSEDED by draft PO {by} and can never be released; "
+                "nothing changed.")
+    allowed = ("a PENDING_APPROVAL PO can be approved (or a DRAFT by its buyer, within "
+               "policy)" if verb == "approved" else "a PENDING_APPROVAL PO can be rejected")
+    return f"PO {po['EBELN']} is {po['STATUS']}, only {allowed}; nothing changed."
 
 
 def approve(store: PoStore, ebeln: str, principal: Principal) -> tuple[int, list[str]]:

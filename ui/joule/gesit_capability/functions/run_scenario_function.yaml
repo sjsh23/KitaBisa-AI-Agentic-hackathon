@@ -21,3 +21,8 @@ action_groups:
           type: text
           markdown: true
           content: "<? apiResponse.body.TABLE_MD ?>"
+      - type: message
+        message:
+          type: text
+          markdown: true
+          content: "<? apiResponse.body.PLAN_MD ?>"

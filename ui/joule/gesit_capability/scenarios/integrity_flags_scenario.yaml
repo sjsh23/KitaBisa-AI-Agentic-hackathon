@@ -1,0 +1,4 @@
+description: Show the GESIT integrity flags for the procurement manager, the buyer and supplier pairs flagged for review and the latest overrides. Use when the user asks to show integrity flags, patterns or overrides. This never blocks or accuses anyone.
+target:
+  name: integrity_flags_function
+  type: function

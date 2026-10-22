@@ -3,7 +3,7 @@ slots:
   - name: scenario_id
     description: The GESIT scenario, one of S1, S2 or S3, exactly as the user named it. If the user did not name one, ask.
   - name: lifnr
-    description: The supplier number the buyer wants instead, for example 100108.
+    description: The supplier number the buyer wants instead, for example 100108, copied exactly from the user's message. Never guess a supplier. If the user did not give one, ask for it.
   - name: justification
     description: The buyer's justification, copied word for word from the user's message. Never add, expand, rephrase or invent words. If the user gave no justification, ask for it.
 target:

@@ -21,7 +21,8 @@ REASON = "Price too high for this quarter, ask buyer for option 2"
 JUSTIFICATION = "100109 has only 4 receipts, we prefer a long track record"
 MAX_BYTES = 20_000
 # an amount in SUMMARY without the label: "Rp1,000 (simulated)" or "Rp1,000 higher (simulated)"
-UNMARKED_AMOUNT = re.compile(r"Rp[\d,]*\d(?![\d,]| \(simulated\)| higher \(simulated\))")
+UNMARKED_AMOUNT = re.compile(r"Rp[\d,]*\d(?![\d,]| \(simulated\)| higher \(simulated\)"
+                             r"| higher than the recommended \d{6} \(simulated\))")
 
 
 @pytest.fixture
@@ -48,7 +49,9 @@ def call(client, method, url, body=None, status=200, headers=H):
 
 
 def sentences(text):
-    return [s for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s]
+    """Sentences of a SUMMARY; quoted text (a phrase to type, the user's words) is one token."""
+    text = re.sub(r'"[^"]*"', '"Q"', text.strip())
+    return [s for s in re.split(r"(?<=[.!?])\s+", text) if s]
 
 
 def pending_s1(client):
@@ -198,7 +201,7 @@ def test_short_reject_reason_is_422(client):
     ebeln = pending_s1(client)
     data = call(client, "POST", f"/approvals/{ebeln}/reject", {"as": "MANAGER01", "reason": "no"},
                 422)
-    assert "at least 20 characters" in data["SUMMARY"]
+    assert 'Reason "no" has 2 characters, at least 20 are needed' in data["SUMMARY"]
 
 
 def test_unknown_po_is_404(client):
@@ -209,7 +212,9 @@ def test_unknown_po_is_404(client):
 def test_short_justification_is_422(client):
     data = call(client, "POST", "/override",
                 {"scenario": "S1", "choose": "100108", "justification": "cheaper"}, 422)
-    assert "at least 20 characters" in data["REASON"] and data["CHOSEN"] == "100108"
+    assert data["REASON"].startswith('Justification "cheaper" has 7 characters, at least 20 '
+                                     'are needed')
+    assert data["CHOSEN"] == "100108"
     assert read_overrides() == [] and call(client, "GET", "/approvals")["PENDING"] == []
 
 

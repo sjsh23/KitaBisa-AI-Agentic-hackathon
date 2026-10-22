@@ -1,0 +1,7 @@
+description: Approve one GESIT purchase order as the buyer, the one-click approval for a draft within policy. Use only when the user says approve a purchase order as the buyer.
+slots:
+  - name: ebeln
+    description: The purchase order number to approve, for example 4500000436, copied exactly from the user's message. Never guess a number. If the user did not give one, ask for it.
+target:
+  name: approve_po_buyer_function
+  type: function

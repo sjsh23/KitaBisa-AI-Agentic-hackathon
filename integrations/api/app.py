@@ -13,7 +13,11 @@ State lives where the CLIs keep it: the PO store (PO_STORE_PATH), the plan log
 (PLAN_LOG_PATH) and the decision log (DECISION_LOG_PATH), on the app's local disk.
 State-changing calls run one at a time (one lock), so two runs never draw the same
 EBELN. Long runs (20 to 46 s with the model texts) can go through /run/start and
-/run/{job_id}. Every response has SUMMARY; every amount in it says "(simulated)" (D-3).
+/run/{job_id}. Every response has SUMMARY; every amount in it says "(simulated)" (D-3),
+text the user typed is quoted exactly as received, and SUMMARY ends with NEXT_STEPS (the
+phrases the user can type next in Joule). POST /approvals/{ebeln}/approve takes "as":
+"BUYER" for the draft's own buyer (ERNAM, the one-click of FR-ACT-3); the policy checks
+in `release_po` decide as for anyone else.
 """
 from __future__ import annotations
 
@@ -35,7 +39,8 @@ from agents import approvals, supervisor as sup
 from agents.integrity import is_override
 from policy import Principal
 from tools import get_integrity_flags, list_pending_approvals, reject_po
-from tools.integrity_tools import clear_decision_log, recommended_label
+from tools.integrity_tools import (MIN_JUSTIFICATION_CHARS, check_override, clear_decision_log,
+                                   read_overrides, recommended_label)
 
 from integrations.api import responses as views
 from integrations.api import warmup
@@ -43,6 +48,8 @@ from integrations.api import warmup
 API_KEY_ENV = "GESIT_API_KEY"
 SCENARIOS = ("S1", "S2", "S3", "ALL", "SCAN")
 MAX_JOBS = 20   # finished /run/start jobs kept in memory, oldest dropped first
+BUYER_ALIAS = "BUYER"   # "as": "BUYER" = the draft's own buyer (ERNAM)
+LATEST_OVERRIDES = 5
 
 
 class RunBody(BaseModel):
@@ -59,7 +66,8 @@ class RunBody(BaseModel):
 
 class ActorBody(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
-    actor: str = Field(alias="as", min_length=1, description="who acts, e.g. MANAGER01")
+    actor: str = Field(alias="as", min_length=1,
+                       description="who acts, e.g. MANAGER01, or BUYER for the draft's buyer")
     role: str = "manager"
 
 
@@ -74,8 +82,10 @@ class OverrideBody(BaseModel):
     llm: bool = False   # the Integrity Guard path uses no model text (as agents.integrity)
 
 
-def _summary_error(status: int, summary: str, **extra: Any) -> HTTPException:
-    return HTTPException(status, {"SUMMARY": summary, "DATA_NOTE": views.DATA_NOTE, **extra})
+def _summary_error(status: int, summary: str, next_steps: str | None = None,
+                   **extra: Any) -> HTTPException:
+    body = views.with_next(summary, next_steps or views.say(views.PENDING_PHRASE))
+    return HTTPException(status, {**body, "DATA_NOTE": views.DATA_NOTE, **extra})
 
 
 def create_app(load_env: bool = True, warm_up: bool | None = None) -> FastAPI:
@@ -121,6 +131,9 @@ def create_app(load_env: bool = True, warm_up: bool | None = None) -> FastAPI:
 
     def store() -> PoStore:
         return PoStore(adapter, path=po_store_path())
+
+    def scenario_of() -> dict[str, str]:
+        return {n["ebeln"]: n["id"] for n in adapter.scenarios()}
 
     def run_supervisor(scenario: str, use_llm: bool, choose: str | None = None,
                        justification: str = "") -> sup.Supervisor:
@@ -183,15 +196,21 @@ def create_app(load_env: bool = True, warm_up: bool | None = None) -> FastAPI:
     @app.get("/approvals", dependencies=[Depends(require_key)])
     def approvals_list() -> dict[str, Any]:
         listing = list_pending_approvals(store=store(), principal=approvals.VIEWER)
-        return {"DATA_NOTE": views.DATA_NOTE, "SUMMARY": views.pending_summary(listing["PENDING"]),
-                "PENDING": listing["PENDING"]}
+        pending = listing["PENDING"]
+        return {"DATA_NOTE": views.DATA_NOTE,
+                **views.with_next(views.pending_summary(pending), views.pending_next_steps(pending)),
+                "PENDING": pending}
 
     @app.post("/approvals/{ebeln}/approve", dependencies=[Depends(require_key)])
     def approve(ebeln: str, body: ActorBody) -> dict[str, Any]:
-        principal = Principal(body.actor, body.role)
         with lock:
+            pos = store()
             try:
-                result = approvals.approve_po(store(), ebeln, principal)
+                if body.actor.strip().upper() == BUYER_ALIAS:   # the draft's own buyer (B2)
+                    principal = Principal(pos.get(ebeln)["ERNAM"], "buyer")
+                else:
+                    principal = Principal(body.actor, body.role)
+                result = approvals.approve_po(pos, ebeln, principal)
             except KeyError:
                 raise _summary_error(404, f"PO {ebeln} was not created by GESIT.")
             except ValueError as exc:
@@ -200,9 +219,11 @@ def create_app(load_env: bool = True, warm_up: bool | None = None) -> FastAPI:
             decision = result["POLICY_DECISION"]
             raise _summary_error(403, views.deny_summary("Approve", principal, decision, ebeln,
                                                          result["STATUS"]),
-                                 POLICY_DECISION=decision)
+                                 views.deny_next_steps(decision, ebeln), POLICY_DECISION=decision)
         po = result["PO"]
-        return {"DATA_NOTE": views.DATA_NOTE, "SUMMARY": views.approve_summary(po, principal.id),
+        return {"DATA_NOTE": views.DATA_NOTE,
+                **views.with_next(views.approve_summary(po, principal.id, principal.role),
+                                  views.say(views.PENDING_PHRASE, views.INTEGRITY_PHRASE)),
                 "EBELN": ebeln, "STATUS": result["STATUS"], "RELEASED_BY": principal.id,
                 "POLICY_DECISION": result["POLICY_DECISION"], "OLD_PO": po.get("OLD_PO_TEXT")}
 
@@ -221,12 +242,17 @@ def create_app(load_env: bool = True, warm_up: bool | None = None) -> FastAPI:
         if result["RESULT"] == "DENIED":
             raise _summary_error(403, views.deny_summary("Reject", principal, decision, ebeln,
                                                          result["STATUS"]),
-                                 POLICY_DECISION=decision)
-        if result["RESULT"] == "REFUSED":
-            raise _summary_error(422, f"Refused: {result['MESSAGE']}.")
+                                 views.deny_next_steps(decision, ebeln), POLICY_DECISION=decision)
+        if result["RESULT"] == "REFUSED":   # A1: quote what was received, exactly
+            raise _summary_error(422, views.short_reason_summary(
+                "Reason", body.reason, result["REASON_CHARS"], MIN_JUSTIFICATION_CHARS,
+                f"Nothing changed, PO {ebeln} stays {result['STATUS']}."),
+                views.say(views.reject_phrase(ebeln)), REASON_CHARS=result["REASON_CHARS"])
         po = pos.get(ebeln)
         option = result["NEXT_OPTION"]
-        return {"DATA_NOTE": views.DATA_NOTE, "SUMMARY": views.reject_summary(po, option),
+        return {"DATA_NOTE": views.DATA_NOTE,
+                **views.with_next(views.reject_summary(po, option, body.reason),
+                                  views.reject_next_steps(po, option, scenario_of())),
                 "EBELN": ebeln, "STATUS": result["STATUS"], "REJECTED_BY": po["REJECTED_BY"],
                 "REJECT_REASON": po["REJECT_REASON"], "REPLACES_EBELN": po["REPLACES_EBELN"],
                 "REJECT_ID": result["REJECT_ID"],
@@ -239,34 +265,55 @@ def create_app(load_env: bool = True, warm_up: bool | None = None) -> FastAPI:
         run = run_supervisor(body.scenario, body.llm, choose=body.choose,
                              justification=body.justification)
         outcome = run.plan["OUTCOME"] or {}
+        cases = (run.evaluation or {}).get("CASES", [])
+        case = cases[0] if cases else None
         if outcome.get("CODE") == sup.STOP_OVERRIDE_REJECTED:
             reason = next((line.strip() for line in run.choice["LINES"]
                            if line.strip().startswith("Rejected")), outcome["TEXT"])
-            raise _summary_error(422, reason, REASON=reason, CHOSEN=run.choice["CHOSEN"])
-        cases = (run.evaluation or {}).get("CASES", [])
-        case = cases[0] if cases else None
+            check = check_override(recommended_label(case) or "", run.choice["CHOSEN"],
+                                   body.justification)
+            if check["OVERRIDE"] and check["JUSTIFICATION_CHARS"] is not None and \
+                    check["JUSTIFICATION_CHARS"] < MIN_JUSTIFICATION_CHARS:   # A1
+                reason = views.short_reason_summary(
+                    "Justification", body.justification, check["JUSTIFICATION_CHARS"],
+                    MIN_JUSTIFICATION_CHARS, "No draft PO was created.")
+            raise _summary_error(422, reason,
+                                 views.say(views.override_phrase(body.scenario, body.choose)),
+                                 REASON=reason, CHOSEN=run.choice["CHOSEN"])
         overridden = case is not None and is_override(body.choose, case)
         out = views.run_response(run)
         flags = get_integrity_flags(adapter=adapter)
-        drafts = out["DRAFTS"]
-        if overridden:
-            summary = (f"Override {run.choice['OVERRIDE_ID']} logged: {run.choice['CHOSEN']} "
-                       f"instead of the recommended {recommended_label(case)}, with the buyer's "
-                       "justification.")
-        else:
-            summary = (f"{body.choose} is the recommended option, so no justification was "
-                       "needed and nothing was logged.")
-        summary += " " + (views.next_step_sentence(case["EBELN"], run.actions) if case
-                          else "Nothing was drafted.")
-        summary += (f" Integrity flags: {flags['PAIRS_FLAGGED']} of {flags['PAIRS_TESTED']} "
-                    "buyer and supplier pairs flagged for review.")
-        return {"DATA_NOTE": views.DATA_NOTE, "SUMMARY": summary,
+        record = (next((o for o in read_overrides()
+                        if o["OVERRIDE_ID"] == run.choice["OVERRIDE_ID"]), None)
+                  if overridden and run.choice else None)
+        summary = views.override_summary(
+            choice=run.choice, record=record,
+            recommended=recommended_label(case) if case else None, chosen=body.choose,
+            justification=body.justification,
+            next_sentence=(views.next_step_sentence(case["EBELN"], run.actions) if case
+                           else "Nothing was drafted."),
+            supersede=views.supersede_sentences(run.actions), flags=flags)
+        return {"DATA_NOTE": views.DATA_NOTE,
+                **views.with_next(summary, out["NEXT_STEPS"]),
                 "OVERRIDE_ID": run.choice["OVERRIDE_ID"] if run.choice else None,
                 "CHOSEN": run.choice["CHOSEN"] if run.choice else body.choose,
                 "RECOMMENDED": recommended_label(case) if case else None,
-                "PLAN": out["PLAN"], "CASES": out["CASES"], "TABLE_MD": out["TABLE_MD"],
-                "DRAFTS": drafts,
-                "INTEGRITY_FLAGS": views.flags_view(flags)}
+                "JUSTIFICATION": body.justification,
+                "PLAN": out["PLAN"], "PLAN_MD": out["PLAN_MD"], "CASES": out["CASES"],
+                "TABLE_MD": out["TABLE_MD"], "DRAFTS": out["DRAFTS"],
+                "SUPERSEDED": out["SUPERSEDED"], "INTEGRITY_FLAGS": views.flags_view(flags)}
+
+    # -------------------------------------------------------------- integrity
+    @app.get("/integrity", dependencies=[Depends(require_key)])
+    def integrity_flags() -> dict[str, Any]:
+        """B4, FR-INT-4: flagged buyer and supplier pairs and the latest overrides."""
+        flags = get_integrity_flags(adapter=adapter)
+        latest = read_overrides()[-LATEST_OVERRIDES:]
+        return {"DATA_NOTE": views.DATA_NOTE,
+                **views.with_next(views.integrity_summary(flags, latest),
+                                  views.say(views.PENDING_PHRASE, views.run_phrase("S1"))),
+                "TABLE_MD": views.integrity_md(flags, latest),
+                "INTEGRITY_FLAGS": views.flags_view(flags), "LATEST_OVERRIDES": latest}
 
     # ------------------------------------------------------------------ reset
     @app.post("/reset", dependencies=[Depends(require_key)])
@@ -276,8 +323,9 @@ def create_app(load_env: bool = True, warm_up: bool | None = None) -> FastAPI:
             sup.clear_plan_log()
             clear_decision_log()
             jobs.clear()
-        return {"status": "ok", "SUMMARY": "The PO store, the plan log and the decision log are "
-                                           "empty. The next run starts from the scenario start "
-                                           "state."}
+        return {"status": "ok",
+                **views.with_next("The PO store, the plan log and the decision log are empty. "
+                                  "The next run starts from the scenario start state.",
+                                  views.say(views.run_phrase("S1")))}
 
     return app

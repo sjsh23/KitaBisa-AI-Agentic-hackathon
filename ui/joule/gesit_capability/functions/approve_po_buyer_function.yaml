@@ -1,0 +1,18 @@
+parameters:
+  - name: ebeln
+action_groups:
+  - actions:
+      - type: api-request
+        method: POST
+        system_alias: GESIT_API
+        path: "/approvals/<? ebeln ?>/approve"
+        headers:
+          Content-Type: application/json
+        body: >
+          {"as": "BUYER"}
+        result_variable: apiResponse
+      - type: message
+        message:
+          type: text
+          markdown: true
+          content: "<? apiResponse.body.SUMMARY ?>"

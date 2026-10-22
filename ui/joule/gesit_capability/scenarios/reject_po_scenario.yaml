@@ -1,7 +1,7 @@
 description: Reject, decline or deny one GESIT purchase order by its number, with the manager's reason. Use when the user says reject, decline or deny a purchase order.
 slots:
   - name: ebeln
-    description: The purchase order number to reject, for example 4500000435.
+    description: The purchase order number to reject, for example 4500000435, copied exactly from the user's message. Never guess a number. If the user did not give one, ask for it.
   - name: reason
     description: The manager's reason, copied word for word from the user's message. Never add, expand, rephrase or invent words. If the user gave no reason, ask for it.
 target:

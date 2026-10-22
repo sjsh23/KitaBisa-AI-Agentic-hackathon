@@ -15,7 +15,8 @@ from datetime import datetime
 from typing import Any, Mapping
 
 from adapters import PoStore
-from adapters.po_store import STATUS_DRAFT, STATUS_PENDING, STATUS_REJECTED, STATUS_RELEASED
+from adapters.po_store import (STATUS_DRAFT, STATUS_PENDING, STATUS_REJECTED, STATUS_RELEASED,
+                               STATUS_SUPERSEDED)
 from policy import AGENT, Decision, Principal, authorize
 from tools.integrity_tools import (JAKARTA, MIN_JUSTIFICATION_CHARS, option_label,
                                    record_rejection)
@@ -155,6 +156,10 @@ def reject_po(ebeln: str, reason: str, *, store: PoStore, principal: Principal,
     """
     po = store.get(ebeln)
     if po["STATUS"] != STATUS_PENDING:
+        if po["STATUS"] == STATUS_SUPERSEDED:
+            by = ", ".join(po.get("SUPERSEDED_BY") or [])
+            raise ValueError(f"PO {ebeln} is SUPERSEDED by draft PO {by} and can never be "
+                             "released; nothing changed")
         raise ValueError(f"PO {ebeln} is {po['STATUS']}, only a PENDING_APPROVAL PO can be "
                          "rejected; nothing changed")
     decision = authorize("reject_po", principal, po)
@@ -165,7 +170,7 @@ def reject_po(ebeln: str, reason: str, *, store: PoStore, principal: Principal,
     chars = len((reason or "").strip())
     if chars < MIN_REJECT_REASON_CHARS:
         return {"RESULT": "REFUSED", "EBELN": ebeln, "POLICY_DECISION": decision.as_dict(),
-                "STATUS": po["STATUS"],
+                "STATUS": po["STATUS"], "REASON_CHARS": chars,
                 "MESSAGE": f"a reject needs a reason of at least {MIN_REJECT_REASON_CHARS} "
                            f"characters ({chars} given); nothing changed"}
     event = {**_event("reject_po", principal, decision, STATUS_REJECTED),
