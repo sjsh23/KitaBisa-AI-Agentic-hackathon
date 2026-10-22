@@ -16,3 +16,8 @@ action_groups:
           type: text
           markdown: true
           content: "<? apiResponse.body.SUMMARY ?>"
+      - type: message
+        message:
+          type: text
+          markdown: true
+          content: "<? apiResponse.body.TABLE_MD ?>"
