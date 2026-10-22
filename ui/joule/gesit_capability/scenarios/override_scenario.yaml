@@ -1,11 +1,11 @@
 description: As the buyer, choose a different supplier than the GESIT recommendation for a scenario, with a written justification. The Integrity Guard logs it.
 slots:
   - name: scenario_id
-    description: The GESIT scenario, one of S1, S2 or S3.
+    description: The GESIT scenario, one of S1, S2 or S3, exactly as the user named it. If the user did not name one, ask.
   - name: lifnr
     description: The supplier number the buyer wants instead, for example 100108.
   - name: justification
-    description: Why the buyer overrides the recommendation, at least 20 characters.
+    description: The buyer's justification, copied word for word from the user's message. Never add, expand, rephrase or invent words. If the user gave no justification, ask for it.
 target:
   name: override_function
   type: function

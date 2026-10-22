@@ -3,7 +3,7 @@ slots:
   - name: ebeln
     description: The purchase order number to reject, for example 4500000435.
   - name: reason
-    description: Why the manager rejects it, at least 20 characters.
+    description: The manager's reason, copied word for word from the user's message. Never add, expand, rephrase or invent words. If the user gave no reason, ask for it.
 target:
   name: reject_po_function
   type: function
