@@ -1,0 +1,10 @@
+schema_version: 3.28.0
+metadata:
+  namespace: joule.ext
+  name: gesit_capability
+  version: 1.0.0
+  display_name: GESIT procurement copilot
+  description: Checks open purchase orders for sugar RM-GULA-001, ranks backup suppliers by expected cost, drafts replacement POs and routes them for approval. All numbers are simulated.
+system_aliases:
+  GESIT_API:
+    destination: GESIT_API
