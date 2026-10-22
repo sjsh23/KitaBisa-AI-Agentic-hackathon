@@ -33,10 +33,11 @@ from __future__ import annotations
 
 import os
 import random
+import threading
 import time
 from typing import Any, Mapping
 
-from integrations.sap import aicore
+from integrations.sap import aicore, calls
 
 DEFAULT_MODEL_ID = "gpt-5.4"
 DEFAULT_FALLBACK_MODELS = "anthropic--claude-4.6-sonnet"
@@ -78,6 +79,7 @@ _OVERLOADED: dict[str, tuple[int, int | None]] = {}
 # Models that could not be built (for example not deployed): model id -> reason.
 _UNAVAILABLE: dict[str, str] = {}
 _SESSIONS: dict[aicore.AiCoreConfig, aicore.AiCoreSession] = {}
+_SESSIONS_LOCK = threading.Lock()
 
 
 def model_id(env: Mapping[str, str] | None = None) -> str:
@@ -148,9 +150,10 @@ def aicore_session(env: Mapping[str, str] | None = None) -> aicore.AiCoreSession
     config = aicore.config_from_env(env)
     if config is None:
         raise LlmUnavailable("SAP AI Core credentials (AICORE_*) are not set")
-    if config not in _SESSIONS:
-        _SESSIONS[config] = aicore.AiCoreSession(config)
-    return _SESSIONS[config]
+    with _SESSIONS_LOCK:
+        if config not in _SESSIONS:
+            _SESSIONS[config] = aicore.AiCoreSession(config)
+        return _SESSIONS[config]
 
 
 def openai_params(params: Mapping[str, Any]) -> dict[str, Any]:
@@ -297,7 +300,8 @@ def _retry_strategy() -> Any:
 
 
 def _ask(model: Any, system_prompt: str, prompt: str) -> str:
-    """One answer, retrying transient errors on the same model."""
+    """One answer, retrying transient errors on the same model; each try is timed in
+    `integrations.sap.calls` (NFR-1)."""
     from strands import Agent
 
     options: dict[str, Any] = {}
@@ -308,12 +312,21 @@ def _ask(model: Any, system_prompt: str, prompt: str) -> str:
         agent = Agent(model=model, system_prompt=system_prompt, tools=[], callback_handler=None,
                       **options)
         try:
-            return str(agent(prompt))
+            with calls.timed(calls.GEN_AI_HUB, f"Gen AI Hub answer {_name_of(model)}"):
+                return str(agent(prompt))
         except Exception as exc:
             if attempt == LLM_ATTEMPTS or not _is_transient(exc):
                 raise
             time.sleep(retry_wait(attempt))
     raise AssertionError("unreachable")
+
+
+def _name_of(model: Any) -> str:
+    """The model id of a Strands model, for the call timing only."""
+    try:
+        return str(model.get_config().get("model_id") or "model")
+    except Exception:
+        return "model"
 
 
 def retry_wait(attempt: int) -> float:

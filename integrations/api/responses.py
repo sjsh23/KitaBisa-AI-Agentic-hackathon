@@ -152,7 +152,10 @@ def draft_views(actions: dict[str, Any] | None) -> list[dict[str, Any]]:
 
 def plan_view(plan: dict[str, Any]) -> dict[str, Any]:
     return {"PLAN_ID": plan["PLAN_ID"], "TRIGGER": plan["TRIGGER"],
-            "STEPS": [{k: s[k] for k in ("NO", "AGENT", "STATUS", "SECONDS", "RESULT")}
+            "STEPS": [{**{k: s[k] for k in ("NO", "AGENT", "STATUS", "SECONDS", "RESULT")},
+                       "SAP_RPT": s.get("SAP_RPT"),   # "SAP-RPT: called" or "SAP-RPT: cached"
+                       "CALLS": [{k: c[k] for k in ("KIND", "WHAT", "SECONDS", "RESULT")}
+                                 for c in s.get("CALLS", [])]}
                       for s in plan["STEPS"]],
             "NOT_IN_LIVE_FLOW": plan["NOT_IN_LIVE_FLOW"], "OUTCOME": plan["OUTCOME"],
             "CASE_OUTCOMES": plan["CASES"], "TOTAL_SECONDS": plan.get("TOTAL_SECONDS")}

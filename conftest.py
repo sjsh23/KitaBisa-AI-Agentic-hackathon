@@ -18,3 +18,13 @@ def reliability_blend_off_by_default():
         os.environ.pop("GESIT_RELIABILITY_BLEND", None)
     else:
         os.environ["GESIT_RELIABILITY_BLEND"] = before
+
+
+@pytest.fixture(autouse=True)
+def fresh_rpt_caches():
+    """Each test starts without stored SAP-RPT predictions or shared AI Core tokens
+    (integrations/sap/rpt_client.py keeps both for the life of the process)."""
+    from integrations.sap import rpt_client
+    rpt_client.clear_prediction_cache()
+    rpt_client.clear_token_cache()
+    yield

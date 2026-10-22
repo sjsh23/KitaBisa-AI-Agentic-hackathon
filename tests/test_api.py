@@ -31,7 +31,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("DECISION_LOG_PATH", str(tmp_path / "decision_log.jsonl"))
     monkeypatch.delenv("PLAN_LOG_PATH", raising=False)
     monkeypatch.delenv("PO_STORE_PATH", raising=False)
-    return TestClient(create_app(load_env=False))
+    return TestClient(create_app(load_env=False, warm_up=False))
 
 
 def call(client, method, url, body=None, status=200, headers=H):

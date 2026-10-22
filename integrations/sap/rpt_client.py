@@ -19,15 +19,32 @@ times when the connection fails or the server answers HTTP 429 or 5xx, so one ne
 drop does not switch a demo run to the fallback. A read timeout is not retried: the
 request reached SAP-RPT, and another 30 s wait would push the run past NFR-1. Each
 retry is noted in `retries` for the run report.
+
+Speed (NFR-1), without changing a single prediction:
+- Prediction cache: the answer for one request is kept in memory, keyed by a SHA-256 of
+  the model id, the endpoint and the exact request rows. The same rows give the stored
+  answer; any different row, model or endpoint calls SAP-RPT. Kept for the life of the
+  process (it holds model outputs, not demo state, so POST /reset does not clear it).
+  GESIT_RPT_CACHE=0 switches it off. Every answer is recorded as called or cached in
+  `integrations.sap.calls`.
+- The AI Core token is shared by every client with the same service key, thread safe,
+  and fetched again shortly before it expires.
 """
 from __future__ import annotations
 
+import copy
+import hashlib
+import json
 import os
+import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 import requests
+
+from integrations.sap import calls
 
 PREDICT_PLACEHOLDER = "[PREDICT]"
 TARGET_COLUMN = "LATE"
@@ -51,6 +68,61 @@ MAX_QUERY_ROWS = 128   # rows scored per call (PRD section 16)
 RPT_RETRY_WAITS_SECONDS = (2.0, 5.0)
 RPT_ATTEMPTS = len(RPT_RETRY_WAITS_SECONDS) + 1
 RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
+CACHE_ENV = "GESIT_RPT_CACHE"
+CACHE_MAX_ENTRIES = 256         # requests kept, oldest dropped first
+TOKEN_MARGIN_SECONDS = 60       # fetch a new token this long before the old one expires
+
+_CACHE_LOCK = threading.Lock()
+_CACHE: OrderedDict[str, dict[str, float]] = OrderedDict()
+_TOKEN_LOCK = threading.Lock()
+_TOKENS: dict[tuple[str, str], tuple[str, float]] = {}   # (auth url, client id) -> token, expiry
+
+
+def cache_enabled(env: Mapping[str, str] | None = None) -> bool:
+    env = os.environ if env is None else env
+    return env.get(CACHE_ENV, "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def cache_key(config: "RptConfig", rows: list[dict[str, Any]]) -> str:
+    """SHA-256 of the model id, the endpoint and the exact request rows (no credential)."""
+    endpoint = (f"{config.base_url}|{config.resource_group}|{config.deployment_id}"
+                if config.mode == "aicore" else config.api_url)
+    payload = json.dumps({"model": config.model_id, "mode": config.mode, "endpoint": endpoint,
+                          "rows": rows}, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def cached_prediction(key: str) -> dict[str, float] | None:
+    with _CACHE_LOCK:
+        if key not in _CACHE:
+            return None
+        _CACHE.move_to_end(key)
+        return dict(_CACHE[key])
+
+
+def store_prediction(key: str, prediction: dict[str, float]) -> None:
+    with _CACHE_LOCK:
+        _CACHE[key] = dict(prediction)
+        _CACHE.move_to_end(key)
+        while len(_CACHE) > CACHE_MAX_ENTRIES:
+            _CACHE.popitem(last=False)
+
+
+def clear_prediction_cache() -> None:
+    """Forget every stored prediction (tests; never called by POST /reset)."""
+    with _CACHE_LOCK:
+        _CACHE.clear()
+
+
+def prediction_cache_size() -> int:
+    with _CACHE_LOCK:
+        return len(_CACHE)
+
+
+def clear_token_cache() -> None:
+    """Forget the shared AI Core tokens (tests)."""
+    with _TOKEN_LOCK:
+        _TOKENS.clear()
 
 
 class RptUnavailable(RuntimeError):
@@ -184,6 +256,20 @@ class RptClient:
     def _predict_batch(self, context_rows: list[Mapping[str, Any]],
                        query_rows: list[Mapping[str, Any]]) -> dict[str, float]:
         rows = build_rows(context_rows, query_rows)
+        key = cache_key(self.config, rows) if cache_enabled() else None
+        if key is not None:
+            hit = cached_prediction(key)
+            if hit is not None:
+                calls.record(calls.SAP_RPT, "SAP-RPT request", 0.0, "cached")
+                return hit
+        prediction = self._call(rows)
+        if key is not None:
+            store_prediction(key, prediction)
+        return prediction
+
+    def _call(self, rows: list[dict[str, Any]]) -> dict[str, float]:
+        """One SAP-RPT request for already built rows."""
+        rows = copy.deepcopy(rows)
         if self.config.mode == "aicore":
             url = self._aicore_url()
             headers = {"Authorization": f"Bearer {self._aicore_token()}",
@@ -212,27 +298,40 @@ class RptClient:
         return f"{base}/v2/inference/deployments/{self.config.deployment_id}/predict"
 
     def _aicore_token(self) -> str:
-        """OAuth client-credentials token, cached until shortly before it expires."""
-        if self._token and time.time() < self._token_expires:
+        """OAuth client-credentials token, shared by every client with the same service key
+        and fetched again TOKEN_MARGIN_SECONDS before it expires (thread safe)."""
+        key = (self.config.auth_url, self.config.client_id)
+        with _TOKEN_LOCK:
+            token, expires = _TOKENS.get(key, (None, 0.0))
+            if token and time.time() < expires:
+                self._token, self._token_expires = token, expires
+                return token
+            url = self.config.auth_url.rstrip("/")
+            if not url.endswith("/oauth/token"):
+                url += "/oauth/token"
+            response = self._post("SAP AI Core token request", url, kind=calls.AICORE_TOKEN,
+                                  data={"grant_type": "client_credentials"},
+                                  auth=(self.config.client_id, self.config.client_secret))
+            payload = response.json()
+            self._token = payload["access_token"]
+            self._token_expires = (time.time() + float(payload.get("expires_in", 600))
+                                   - TOKEN_MARGIN_SECONDS)
+            _TOKENS[key] = (self._token, self._token_expires)
             return self._token
-        url = self.config.auth_url.rstrip("/")
-        if not url.endswith("/oauth/token"):
-            url += "/oauth/token"
-        response = self._post("SAP AI Core token request", url,
-                              data={"grant_type": "client_credentials"},
-                              auth=(self.config.client_id, self.config.client_secret))
-        payload = response.json()
-        self._token = payload["access_token"]
-        self._token_expires = time.time() + float(payload.get("expires_in", 600)) - 60
-        return self._token
 
-    def _post(self, what: str, url: str, **kwargs: Any) -> Any:
+    def _post(self, what: str, url: str, kind: str = calls.SAP_RPT, **kwargs: Any) -> Any:
         """POST that returns an HTTP 200 response or raises `RptUnavailable`, retrying a lost
-        connection or an HTTP 429 / 5xx answer after RPT_RETRY_WAITS_SECONDS."""
+        connection or an HTTP 429 / 5xx answer after RPT_RETRY_WAITS_SECONDS. Every try is
+        timed in `integrations.sap.calls` (NFR-1)."""
         for attempt in range(1, RPT_ATTEMPTS + 1):
+            start = time.perf_counter()
             try:
                 response = self.session.post(url, timeout=self.timeout, **kwargs)
+                calls.record(kind, what, time.perf_counter() - start,
+                             "ok" if response.status_code == 200
+                             else f"HTTP {response.status_code}")
             except requests.RequestException as exc:
+                calls.record(kind, what, time.perf_counter() - start, type(exc).__name__)
                 if attempt == RPT_ATTEMPTS or not is_retryable(exc):
                     raise RptUnavailable(f"{what} failed: {type(exc).__name__}"
                                          + tries_text(attempt)) from exc

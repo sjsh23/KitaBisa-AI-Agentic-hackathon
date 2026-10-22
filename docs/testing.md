@@ -68,7 +68,7 @@ git diff --cached --name-only
 py -3.11 -m pytest -q
 ```
 
-Expected: `351 passed` (22 October 2026). The tests never call the network: SAP-RPT, SAP AI Core and the reasoning models are replaced by fakes.
+Expected: `365 passed` (22 October 2026). The tests never call the network: SAP-RPT, SAP AI Core and the reasoning models are replaced by fakes.
 
 | Test file | What it proves | Requirements |
 |---|---|---|
@@ -86,6 +86,7 @@ Expected: `351 passed` (22 October 2026). The tests never call the network: SAP-
 | `tests/test_monte_carlo_robustness.py` | Default output unchanged against a frozen copy (`tests/monte_carlo_default_before.txt`) except the renamed headers and footer; two generated worlds: SAP-RPT once per world, case and mode, temporary folders deleted, `data_gen/out` hashes unchanged, a fallback world excluded from the cross-world summary; JSON has `simulated` and the cross-world summary; downtime sweep at Rp150,000,000 equals the main results (decisions fixed and re-made), a higher value raises only strategies with stock-out days; `--baseline-table rpt` gives the old numbers, `same` differs only where the LEARNING table differs; summary table; nothing outside `eval/` imports `eval` | FR-EVA-4, D-1, D-3 |
 | `tests/test_moq.py` | MINBM in the quotes (1,000 kg, 5,000 kg for 100102, simulated); an order part below MINBM raised to MINBM with the extra kg in the purchase cost and a "MOQ +300 kg" mark, risk cost unchanged; spare below MINBM excluded as a full order (BELOW_MOQ) and skipped as a split partner; MINBM equal to the need and a quote without MINBM change nothing; keep row unchanged; reservations and drafts use the ordered kg (NETWR incl. the round-up); the explanation facts name the round-up and pass the check | FR-SEL-1, FR-SEL-2, FR-ACT-1, POL-1, D-3 |
 | `tests/test_api.py` | The HTTP API with FastAPI's TestClient: no start without GESIT_API_KEY, /health without a key, 401 on every other endpoint without or with a wrong key; /run for S1, S2, S3, all and scan (plan steps with STATUS and SECONDS, top 3 rows plus the keep row, MOQ mark, drafts with NEXT, SUMMARY of 2 to 4 sentences with every amount marked simulated); /run/start then /run/{job_id}; /approvals; 403 on a policy deny (POL-1, POL-4); 409 on a double approve and a reject after release; 422 on a short reason and a short justification; /override logs, drafts and returns the integrity flags; /reset then /approvals empty; every response under 20 KB; SUMMARY wording (lowest-price supplier with its main driver, 1 PO waits and 2 POs wait); TABLE_MD columns, Rp juta with one decimal, the simulated line, MOQ and split marks, a heading per PO and the 3 KB limit | FR-SUP-1 to FR-SUP-3, FR-ACT-2, FR-INT-1, POL-1, POL-4, D-3, NFR-4 |
+| `tests/test_speed.py` | Same Detection and Supplier Evaluation output with and without the SAP-RPT cache (fake SAP-RPT), cache hit and miss (one cell, another model id), no credential in the key, copies returned, POST /reset keeps the cache; the SAP-RPT token shared by clients and fetched again after expiry, the AI Core token fetched once by 8 threads and refreshed; explanations in parallel with the same order and checks as one by one, the Detection text in parallel with Supplier Evaluation and the same report as agents.run; plan log "SAP-RPT: called" then "cached" with the calls and their seconds; warm-up does not block /health, finishes offline with its failures recorded, fills the cache for S1, S2, S3 and all | NFR-1, FR-DET-1, FR-SEL-4, D-3 |
 | `tests/test_supervisor.py` | Plan steps for S1, S2, S3, all and scan (Integrity Guard before Action with `--choose`); the graph is a Strands Graph of Python nodes with fixed edges; each stop rule (nothing flagged, keep everywhere, no candidate for one case and for every case, policy deny hands back to the manager, short justification); a failed step is marked FAILED; the supervisor never calls `release_po`; the plan log line is JSON with every step, STATUS and SECONDS; the CLI prints the `agents.run` report after the plan | FR-SUP-1 to FR-SUP-3, FR-ACT-2, POL-4 |
 | `tests/test_approvals.py` | PO store saved and loaded by a second store object, numbers continue from the file, memory mode writes nothing, clear; S1 across two processes approved and rejected; next option from the saved table (rank 2, rank 1 after a rejected override, keep when it ranked higher); reject as its own decision log entry, overrides unchanged; agent denied approve and reject (POL-4), buyer denied reject (POL-1), reason under 20 characters refused; every double action changes nothing; CLI list, reject, approve | FR-ACT-2, FR-ACT-3, POL-1, POL-4, FR-INT-1 |
 
@@ -318,6 +319,23 @@ curl -X POST http://127.0.0.1:8000/reset -H "X-API-Key: local-key"
 
 `POST /run` with `"llm": true` (real SAP-RPT-1.6 and GPT-5.4) took 19.4 s locally on 22 Oct
 2026: Detection 12.9 s, Supplier Evaluation 6.4 s, Action 0.0 s.
+
+Speed (NFR-1). Every plan step lists its external calls with their seconds (`CALLS`: SAP-RPT,
+Gen AI Hub, AI Core token, deployment lookup) and `SAP_RPT`: "SAP-RPT: called" or "SAP-RPT:
+cached". On start the app warms up in the background (`GET /warmup` shows it, about 20 s);
+after that, measured locally on 22 Oct 2026 with the real services:
+
+| Run | Before | After warm-up |
+|---|---|---|
+| S1, llm true, first run | 21.9 s | 4.3 s |
+| S1, llm true, again | 14.9 s (Detection 8.7, Supplier Evaluation 6.2) | 4.4 s (0.0, 4.3) |
+| all, llm true | 28.0 s | 5.0 s |
+| S1, llm false | 7.9 s | 0.04 s |
+| all, llm false | 12.8 s | 0.09 s |
+
+Every number, ranked table, draft and SUMMARY was identical before and after; the model texts
+are written live on every run. Without the warm-up (`GESIT_WARMUP=0`) the first S1 run took
+12.6 s and the next one 4.5 s.
 
 ### Monte Carlo against baselines (FR-EVA-4)
 

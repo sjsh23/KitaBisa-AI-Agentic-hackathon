@@ -36,6 +36,7 @@ import argparse
 import json
 import os
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -51,6 +52,7 @@ from agents.detection import DetectionAgent
 from agents.run import (DEFAULT_MATNR, cases_for, format_action, format_evaluation,
                         format_report, llm_notes, notices_on_file, quota_text)
 from agents.supplier_evaluation import SupplierEvaluationAgent
+from integrations.sap import calls
 from integrations.sap.rpt_client import RptClient
 from policy import APPROVAL_THRESHOLD_IDR
 from scoring import supplier_score
@@ -227,14 +229,18 @@ class StepNode(MultiAgentBase):
     async def invoke_async(self, task: Any, invocation_state: dict[str, Any] | None = None,
                            **kwargs: Any) -> MultiAgentResult:
         start = time.perf_counter()
+        position = calls.mark()
         try:
             status, result = self.fn()
         except Exception as exc:
             self.step.update(STATUS=STATUS_FAILED, RESULT=f"{type(exc).__name__}: {exc}",
-                             SECONDS=round(time.perf_counter() - start, 2))
+                             SECONDS=round(time.perf_counter() - start, 2),
+                             CALLS=calls.since(position))
             raise
         seconds = round(time.perf_counter() - start, 2)
-        self.step.update(STATUS=status, RESULT=result, SECONDS=seconds)
+        made = calls.since(position)   # external calls of this step, with their seconds (NFR-1)
+        self.step.update(STATUS=status, RESULT=result, SECONDS=seconds, CALLS=made,
+                         SAP_RPT=calls.rpt_status(made))
         ms = round(seconds * 1000)
         node = NodeResult(result=MultiAgentResult(status=Status.COMPLETED), execution_time=ms,
                           status=Status.COMPLETED, execution_count=1)
@@ -280,6 +286,8 @@ class Supervisor:
                                                               rpt_client=self.rpt_client)
         self.plan = build_plan(scenario, self.adapter.scenarios(), matnr, choose, plan_id)
         self.report: dict[str, Any] | None = None
+        self._reasoning: Future | None = None   # Detection's model text, written in parallel
+        self._text_pool: ThreadPoolExecutor | None = None
         self.evaluation: dict[str, Any] | None = None
         self.choice: dict[str, Any] | None = None
         self.actions: dict[str, Any] | None = None
@@ -313,8 +321,11 @@ class Supervisor:
     # ---- steps (each returns STATUS and a one-line RESULT)
     def detect(self) -> tuple[str, str]:
         notices = notices_on_file(self.scenario, self.adapter.scenarios())
-        self.report = (self.detector.run(self.matnr, notices) if self.use_llm
-                       else self.detector.detect(self.matnr, notices))
+        self.report = self.detector.detect(self.matnr, notices)
+        if self.use_llm:
+            # The assessment needs only these numbers and nothing waits for it before the
+            # report is printed, so it is written while Supplier Evaluation runs (NFR-1).
+            self._reasoning = self._pool().submit(self.detector.reason, self.report)
         pred, flagged = self.report["PREDICTION"], self.report["FLAGGED_EBELN"]
         model = pred["MODEL_ID"] + (", FALLBACK" if pred["FALLBACK"] else "")
         result = (f"{len(self.report['OPEN_POS'])} open POs scored ({model}), "
@@ -322,6 +333,7 @@ class Supervisor:
         if not flagged:
             self._stop(DETECTION, STOP_NOTHING_FLAGGED, "Detection flagged nothing: no action "
                        "needed.", [])
+            self._join_reasoning()
         return STATUS_DONE, result
 
     def evaluate(self) -> tuple[str, str]:
@@ -329,6 +341,7 @@ class Supervisor:
         flagged = self.report["FLAGGED_POS"]
         self.evaluation = (self.evaluator.run(self.report, flagged, shown) if self.use_llm
                            else self.evaluator.evaluate(self.report, flagged, shown))
+        self._join_reasoning()
         cases = self.evaluation["CASES"]
         result = f"{len(cases)} case{'s' if len(cases) != 1 else ''} ranked" + (
             ": " + "; ".join(f"PO {c['EBELN']} #1 {recommended_label(c) or 'none'}"
@@ -376,6 +389,18 @@ class Supervisor:
                    + "; the supervisor does not wait for an approval." if to else
                    "nothing waits for a human.", cases)
         return STATUS_DONE, result
+
+    def _pool(self) -> ThreadPoolExecutor:
+        if self._text_pool is None:
+            self._text_pool = ThreadPoolExecutor(max_workers=1,
+                                                 thread_name_prefix="gesit-detection-text")
+        return self._text_pool
+
+    def _join_reasoning(self) -> None:
+        """Put Detection's model text into the report once it is written."""
+        if self._reasoning is not None:
+            future, self._reasoning = self._reasoning, None
+            self.report = future.result()   # `DetectionAgent.reason` never raises
 
     def _buyer_of(self, ebeln: str) -> str:
         return next(line["ERNAM"] for line in self.adapter.po_lines() if line["EBELN"] == ebeln)
@@ -426,6 +451,10 @@ class Supervisor:
         try:
             self.build_graph()(f"GESIT trigger {self.plan['TRIGGER']['SCENARIO']}")
         finally:
+            self._join_reasoning()
+            if self._text_pool is not None:
+                self._text_pool.shutdown(wait=True)
+                self._text_pool = None
             for step in self.plan["STEPS"]:
                 if step["STATUS"] == STATUS_PLANNED:
                     step["STATUS"] = STATUS_NOT_RUN

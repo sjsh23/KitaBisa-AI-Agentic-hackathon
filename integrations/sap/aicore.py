@@ -11,11 +11,14 @@ The deployment's model version is reported with every answer (NFR-2).
 from __future__ import annotations
 
 import os
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Mapping
 
 import requests
+
+from integrations.sap import calls
 
 FOUNDATION_MODELS = "foundation-models"
 ENV_KEYS = ("AICORE_AUTH_URL", "AICORE_CLIENT_ID", "AICORE_CLIENT_SECRET", "AICORE_BASE_URL")
@@ -81,22 +84,28 @@ class AiCoreSession:
         self._token: str | None = None
         self._token_expires = 0.0
         self._deployments: dict[str, Deployment] = {}
+        self._lock = threading.RLock()   # parallel model calls share one session
 
     def headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.token()}",
                 "AI-Resource-Group": self.config.resource_group}
 
     def token(self) -> str:
-        """OAuth client-credentials token, cached until shortly before it expires."""
+        """OAuth client-credentials token, cached until shortly before it expires (thread safe)."""
+        with self._lock:
+            return self._fetch_token()
+
+    def _fetch_token(self) -> str:
         if self._token and time.time() < self._token_expires:
             return self._token
         url = self.config.auth_url.rstrip("/")
         if not url.endswith("/oauth/token"):
             url += "/oauth/token"
         try:
-            response = self.session.post(
-                url, data={"grant_type": "client_credentials"},
-                auth=(self.config.client_id, self.config.client_secret), timeout=self.timeout)
+            with calls.timed(calls.AICORE_TOKEN, "SAP AI Core token request (Gen AI Hub)"):
+                response = self.session.post(
+                    url, data={"grant_type": "client_credentials"},
+                    auth=(self.config.client_id, self.config.client_secret), timeout=self.timeout)
         except requests.RequestException as exc:
             raise AiCoreUnavailable(f"SAP AI Core token request failed: {type(exc).__name__}") from exc
         if response.status_code != 200:
@@ -107,13 +116,20 @@ class AiCoreSession:
         return self._token
 
     def deployment(self, model: str) -> Deployment:
-        """The deployment serving `model`, looked up once per process."""
+        """The deployment serving `model`, looked up once per process (thread safe)."""
+        with self._lock:
+            return self._find_deployment(model)
+
+    def _find_deployment(self, model: str) -> Deployment:
         if model in self._deployments:
             return self._deployments[model]
+        headers = self.headers()
         try:
-            response = self.session.get(
-                api_url(self.config) + "/lm/deployments", headers=self.headers(),
-                params={"scenarioId": FOUNDATION_MODELS, "status": "RUNNING"}, timeout=self.timeout)
+            with calls.timed(calls.AICORE_DEPLOYMENT, f"deployment lookup {model}"):
+                response = self.session.get(
+                    api_url(self.config) + "/lm/deployments", headers=headers,
+                    params={"scenarioId": FOUNDATION_MODELS, "status": "RUNNING"},
+                    timeout=self.timeout)
         except requests.RequestException as exc:
             raise AiCoreUnavailable(f"SAP AI Core deployment list failed: {type(exc).__name__}") from exc
         if response.status_code != 200:

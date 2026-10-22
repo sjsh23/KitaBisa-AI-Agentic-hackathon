@@ -38,6 +38,7 @@ from tools import get_integrity_flags, list_pending_approvals, reject_po
 from tools.integrity_tools import clear_decision_log, recommended_label
 
 from integrations.api import responses as views
+from integrations.api import warmup
 
 API_KEY_ENV = "GESIT_API_KEY"
 SCENARIOS = ("S1", "S2", "S3", "ALL", "SCAN")
@@ -77,8 +78,12 @@ def _summary_error(status: int, summary: str, **extra: Any) -> HTTPException:
     return HTTPException(status, {"SUMMARY": summary, "DATA_NOTE": views.DATA_NOTE, **extra})
 
 
-def create_app(load_env: bool = True) -> FastAPI:
-    """Build the app; RuntimeError when GESIT_API_KEY is not set (the app does not start)."""
+def create_app(load_env: bool = True, warm_up: bool | None = None) -> FastAPI:
+    """Build the app; RuntimeError when GESIT_API_KEY is not set (the app does not start).
+
+    `warm_up` (default: GESIT_WARMUP, on) starts `integrations.api.warmup` in a background
+    thread; /health answers at once either way, GET /warmup shows its progress.
+    """
     if load_env:
         try:   # local development reads .env; on Cloud Foundry the variables come from cf set-env
             from dotenv import load_dotenv
@@ -106,6 +111,9 @@ def create_app(load_env: bool = True) -> FastAPI:
     lock = threading.Lock()
     jobs: OrderedDict[str, dict[str, Any]] = OrderedDict()
     adapter = default_adapter()
+    warm_state: dict[str, Any] = {"STATUS": "off", "STEPS": [], "SECONDS": None}
+    if warmup.enabled() if warm_up is None else warm_up:
+        warmup.start(adapter, warm_state)
 
     def require_key(x_api_key: str | None = Header(default=None)) -> None:
         if not x_api_key or not hmac.compare_digest(x_api_key, api_key):
@@ -131,6 +139,12 @@ def create_app(load_env: bool = True) -> FastAPI:
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/warmup", dependencies=[Depends(require_key)])
+    def warmup_status() -> dict[str, Any]:
+        steps = "; ".join(f"{s['STEP']} {s['SECONDS']} s" for s in warm_state["STEPS"])
+        return {**warm_state, "SUMMARY": f"Warm-up {warm_state['STATUS']}"
+                + (f": {steps}." if steps else ".")}
 
     # -------------------------------------------------------------------- run
     @app.post("/run", dependencies=[Depends(require_key)])

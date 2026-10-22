@@ -23,6 +23,8 @@ used yet: masking is done in code, and the text never cites contract terms.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import json
 import os
 import re
@@ -35,6 +37,7 @@ from scoring import disruption, supplier_score
 from tools import score_suppliers
 
 AGENT_NAME = "supplier_evaluation"
+TEXT_WORKERS = 4   # model calls at the same time (NFR-1)
 MAX_EXPLANATION_WORDS = 120   # FR-SEL-4: under 120 words
 MIN_TRACK_RECORD = 10         # fewer past goods receipts than this is called out to the buyer
 FASTEST_NOTE = ("No new order can cover the full quantity from one supplier, so there is no "
@@ -269,36 +272,50 @@ class SupplierEvaluationAgent:
 
     # ------------------------------------------------------------ step 2
     def explain(self, report: dict[str, Any]) -> dict[str, Any]:
-        """Add the explanation and its check to every case. Never raises."""
+        """Add the explanation and its check to every case. Never raises.
+
+        The cases' model calls are independent, so they run at the same time on up to
+        TEXT_WORKERS threads (NFR-1); the cases keep their order and each text gets the
+        same check as before. Every text is written live, nothing is cached.
+        """
         settings = explanation_settings()
         names = [sup["NAME1"] for sup in self.adapter.suppliers().values()]
-        cases = []
-        for case in report["CASES"]:
-            out = {**case, "EXPLANATION": None, "EXPLANATION_MODEL": settings["MODEL"],
-                   "EXPLANATION_ERROR": None, "EXPLANATION_CHECK": None, "EXPLANATION_FIXES": []}
-            if not case["SCORING"]["CANDIDATES"]:
-                out["EXPLANATION_ERROR"] = "no candidate supplier to explain"
-                cases.append(out)
-                continue
-            facts = facts_for_llm(case, report)
-            try:
-                grounding.assert_masked(facts, names)          # PRD section 10, FR-SEL-4
-                answer = self.explainer(facts)
-                if isinstance(answer, tuple):   # (text, model that wrote it)
-                    answer, out["EXPLANATION_MODEL"] = answer
-                # Spacing and spelling fixed in code before the check (NFR-5); numbers untouched.
-                out["EXPLANATION"], out["EXPLANATION_FIXES"] = grounding.tidy_text(
-                    answer, SYSTEM_PROMPT, facts)
-                out["EXPLANATION_CHECK"] = grounding.check_explanation(
-                    out["EXPLANATION"], facts, MAX_EXPLANATION_WORDS,
-                    lifnrs=[r["LIFNR"] for r in case["SCORING"]["CANDIDATES"]] + [case["LIFNR"]],
-                    must_mention=required_mentions(facts))
-            except grounding.MaskingError as exc:
-                out["EXPLANATION_ERROR"] = str(exc)
-            except Exception as exc:   # the ranked table must survive any model failure
-                out["EXPLANATION_ERROR"] = f"explanation model unavailable: {llm.error_detail(exc)}"
-            cases.append(out)
+        todo = report["CASES"]
+        if len(todo) > 1:
+            with ThreadPoolExecutor(max_workers=min(TEXT_WORKERS, len(todo)),
+                                    thread_name_prefix="gesit-explanation") as pool:
+                cases = list(pool.map(
+                    lambda case: self._explain_case(case, report, settings, names), todo))
+        else:
+            cases = [self._explain_case(case, report, settings, names) for case in todo]
         return {**report, "EXPLANATION_SETTINGS": settings, "CASES": cases}
+
+    def _explain_case(self, case: dict[str, Any], report: dict[str, Any],
+                      settings: dict[str, Any], names: list[str]) -> dict[str, Any]:
+        """One case's explanation and its check; never raises."""
+        out = {**case, "EXPLANATION": None, "EXPLANATION_MODEL": settings["MODEL"],
+               "EXPLANATION_ERROR": None, "EXPLANATION_CHECK": None, "EXPLANATION_FIXES": []}
+        if not case["SCORING"]["CANDIDATES"]:
+            out["EXPLANATION_ERROR"] = "no candidate supplier to explain"
+            return out
+        facts = facts_for_llm(case, report)
+        try:
+            grounding.assert_masked(facts, names)          # PRD section 10, FR-SEL-4
+            answer = self.explainer(facts)
+            if isinstance(answer, tuple):   # (text, model that wrote it)
+                answer, out["EXPLANATION_MODEL"] = answer
+            # Spacing and spelling fixed in code before the check (NFR-5); numbers untouched.
+            out["EXPLANATION"], out["EXPLANATION_FIXES"] = grounding.tidy_text(
+                answer, SYSTEM_PROMPT, facts)
+            out["EXPLANATION_CHECK"] = grounding.check_explanation(
+                out["EXPLANATION"], facts, MAX_EXPLANATION_WORDS,
+                lifnrs=[r["LIFNR"] for r in case["SCORING"]["CANDIDATES"]] + [case["LIFNR"]],
+                must_mention=required_mentions(facts))
+        except grounding.MaskingError as exc:
+            out["EXPLANATION_ERROR"] = str(exc)
+        except Exception as exc:   # the ranked table must survive any model failure
+            out["EXPLANATION_ERROR"] = f"explanation model unavailable: {llm.error_detail(exc)}"
+        return out
 
     def run(self, detection: dict[str, Any], flagged_pos: list[dict[str, Any]] | None = None,
             cases: list[str] | None = None) -> dict[str, Any]:
