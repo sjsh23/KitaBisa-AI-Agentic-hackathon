@@ -991,6 +991,51 @@ def write_json(out: dict[str, Any], path: str) -> None:
     target.write_text(json.dumps(out, indent=2), encoding="utf-8")
 
 
+API_SUMMARY_COMMAND = ("python -m eval.monte_carlo --scenario all --worlds predeclared --runs 1000 "
+                       "--seed 42 --summary --api-summary integrations/api/evaluation_summary.json")
+
+
+def api_summary(out: dict[str, Any]) -> dict[str, Any]:
+    """--api-summary: the small comparison the HTTP API shows in chat (GET /evaluation).
+    Totals over S1 to S3 on the tracked data and the cross-world counts, Rp juta, simulated.
+    Written by eval/ so the API never imports eval/ or reads _truth/ (D-1)."""
+    if "CROSS_WORLD" not in out:
+        raise SystemExit("--api-summary needs --worlds (the cross-world counts)")
+    totals = out["RESULTS"]["TOTAL"]["STRATEGIES"]
+    cross = out["CROSS_WORLD"]
+
+    def juta(x: float | None) -> float | None:
+        return None if x is None else round(x / 1e6, 1)
+
+    return {
+        "simulated": True,
+        "DATA_NOTE": "simulated data, tested against baselines in simulation (FR-EVA-4)",
+        "COMMAND": API_SUMMARY_COMMAND,
+        "SEED": out["SETTINGS"]["SEED"], "RUNS": out["SETTINGS"]["RUNS"],
+        "TRACKED_TOTAL_JUTA": {s: juta(totals[s]["MEAN_COST"]) for s in STRATEGIES},
+        "TRACKED_P_ANY_OUT": {s: round(totals[s]["P_ANY_OUT"], 3) for s in STRATEGIES},
+        "WORLDS": {
+            "COUNT": len(cross["WORLDS_USED"]), "USED": cross["WORLDS_USED"],
+            "EXCLUDED": cross["WORLDS_EXCLUDED"],
+            "MEAN_TOTAL_JUTA": {s: juta(cross["MEAN_TOTAL_COST"][s]) for s in STRATEGIES},
+            "VERSUS": {g: {o: {"CHEAPER_IN": v["CHEAPER_IN"], "EQUAL_IN": v["EQUAL_IN"],
+                               "OF": v["OF"], "MEAN_DIFF_JUTA": juta(v["MEAN_DIFF"]),
+                               "MIN_DIFF_JUTA": juta(v["MIN_DIFF"]),
+                               "MAX_DIFF_JUTA": juta(v["MAX_DIFF"])}
+                           for o, v in others.items()}
+                       for g, others in cross["VERSUS"].items()},
+        },
+    }
+
+
+def write_api_summary(out: dict[str, Any], path: str) -> None:
+    target = Path(path).resolve()
+    tracked = world_gen.TRACKED_OUT.resolve()
+    if target == tracked or tracked in target.parents:
+        raise SystemExit("--api-summary: do not write into data_gen/out (tracked data)")
+    target.write_text(json.dumps(api_summary(out), indent=2) + "\n", encoding="utf-8")
+
+
 def _int_list(text: str) -> list[int]:
     return [int(x) for x in text.replace(" ", "").split(",") if x]
 
@@ -1016,6 +1061,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--baseline-table", choices=BASELINE_TABLES, default="both")
     parser.add_argument("--summary", action="store_true",
                         help="compact tables instead of the full ones")
+    parser.add_argument("--api-summary", metavar="PATH",
+                        help="also write the small comparison for GET /evaluation (needs --worlds)")
     args = parser.parse_args(argv)
     try:   # SAP-RPT credentials for the predictions, from .env (NFR-4)
         from dotenv import load_dotenv
@@ -1028,6 +1075,8 @@ def main(argv: list[str] | None = None) -> int:
     print(format_all(out, args.summary))
     if args.json:
         write_json(out, args.json)
+    if args.api_summary:
+        write_api_summary(out, args.api_summary)
     return 0
 
 

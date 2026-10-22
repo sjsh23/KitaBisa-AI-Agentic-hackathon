@@ -1,0 +1,12 @@
+action_groups:
+  - actions:
+      - type: api-request
+        method: GET
+        system_alias: GESIT_API
+        path: /status
+        result_variable: apiResponse
+      - type: message
+        message:
+          type: text
+          markdown: true
+          content: "<? apiResponse.body.SUMMARY ?>"

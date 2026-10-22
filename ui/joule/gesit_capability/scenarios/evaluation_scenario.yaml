@@ -1,0 +1,4 @@
+description: Show how GESIT compares with simple rules (always cheapest, always fastest, keep the purchase order), tested in simulation. Use when the user asks how GESIT compares with simple rules or whether the agent adds value.
+target:
+  name: evaluation_function
+  type: function

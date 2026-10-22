@@ -537,6 +537,40 @@ superseded draft can never be released."
   per reason, including suppliers that cannot cover the quantity even as a split
   (`score_suppliers` reports them as CANNOT_COVER; no scoring change).
 
+## 16. Demo readiness, value against simple rules, and output wording in chat (FR-SEL-4, FR-EVA-4, section 4, section 12)
+
+**Status:** built, waiting for team agreement (22 Oct 2026). `integrations/api/`,
+`eval/monte_carlo.py`, `agents/supplier_evaluation.py`, `agents/grounding.py`, `ui/joule/`.
+
+- **Explanation wording.** When #1 is also the cheapest or the fastest option, the opening
+  sentence built in code says so ("Recommend supplier 100109, also the fastest option, at
+  ..."); the prompt no longer asks for a separate "It is also ..." sentence, and the
+  explanation check fails on one (AMBIGUOUS_ALSO). Percent gaps are rounded to a whole
+  percent ("564% more", "less than 1% more"); amounts stay exact.
+- **Chat layout.** PLAN_MD is a list after a blank line, with "Evaluation and Learning" and
+  "Stop" as their own paragraphs. TABLE_MD and the integrity tables have at most 4 columns
+  (Rank, Supplier, Expected cost in Rp juta, Notes with price per kg, lead days and marks).
+- **Who was flagged.** An override SUMMARY and GET /integrity first say whether the
+  overriding buyer's own pair with the chosen supplier is flagged, then "Other flagged
+  pairs: ...".
+- **RELEASED.** A manager's and a buyer's approval both end in RELEASED (`release_po`);
+  SUMMARY names who approved ("approved by the procurement manager MANAGER01" or "approved
+  by the buyer BUYER04, one-click within policy").
+- **Which scenario.** POST /run without a valid scenario answers 422 "Which scenario: S1, S2,
+  S3 or all?" instead of running anything. In Joule, "Run GESIT on scenario S1, S2 or S3"
+  (slot S1, S2 or S3 only, asked when missing) and "Run GESIT on all scenarios" (no slot) are
+  separate scenarios.
+- **GET /status.** Warm-up state, SAP-RPT cache size, open drafts, app start time; SUMMARY
+  "GESIT is ready: warm-up done, 0 open drafts." Joule scenario "Is GESIT ready?".
+- **GET /evaluation.** The Monte Carlo (FR-EVA-4) writes a small summary with
+  `--api-summary integrations/api/evaluation_summary.json` (tracked totals per strategy and the
+  11-world counts against each baseline, Rp juta, simulated). The API only reads that file;
+  it never imports eval/ and never reads _truth/ (D-1). SUMMARY in the words of PRD section 4,
+  "tested against baselines in simulation", with the real counts and the average gap. Joule
+  scenario "How does GESIT compare with simple rules?". The file must be regenerated (and
+  committed) whenever the data, the scoring or the agents change.
+- **After a reject** the SUMMARY ends with the override phrase for the next option.
+
 ## PRD Changelog draft
 
 Lines to add to the Changelog at the end of `PRD.md` once the team agrees:
@@ -550,3 +584,4 @@ Lines to add to the Changelog at the end of `PRD.md` once the team agrees:
 - 2026-10-22: Sections 5, 13, 17: HTTP API (`integrations/api`, FastAPI on Cloud Foundry) as the bridge between Joule and the supervisor, approvals and Integrity Guard, until AgentCore is set up (item 13).
 - 2026-10-22: FR-ACT-1: at most one open draft per flagged PO; a new draft supersedes an older DRAFT or PENDING_APPROVAL one, which can never be released (item 14).
 - 2026-10-22: FR-ACT-3, FR-INT-4, section 8: the API quotes user text exactly, ends every SUMMARY with NEXT_STEPS, takes "as": "BUYER" for the buyer's one-click, returns PLAN_MD and GET /integrity, and shows the explanation in TABLE_MD (item 15).
+- 2026-10-22: FR-SEL-4, FR-EVA-4, sections 4 and 12: the explanation says "also the fastest" in its first sentence and rounds percents; the API asks which scenario, adds GET /status and GET /evaluation (from the eval/ summary file, tested against baselines in simulation); RELEASED for every approval (item 16).

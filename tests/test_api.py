@@ -181,7 +181,7 @@ def test_approve_then_double_approve_is_409(client):
     ebeln = pending_s1(client)
     data = call(client, "POST", f"/approvals/{ebeln}/approve", {"as": "MANAGER01"})
     assert data["STATUS"] == "RELEASED" and data["RELEASED_BY"] == "MANAGER01"
-    assert "approved and released by MANAGER01" in data["SUMMARY"]
+    assert "is RELEASED, approved by the procurement manager MANAGER01" in data["SUMMARY"]
     assert "is RELEASED" in call(client, "POST", f"/approvals/{ebeln}/approve",
                                  {"as": "MANAGER01"}, 409)["SUMMARY"]
     call(client, "POST", f"/approvals/{ebeln}/reject", {"as": "MANAGER01", "reason": REASON}, 409)
@@ -295,9 +295,8 @@ def test_table_md_for_s1(client):
     data = call(client, "POST", "/run", {"scenario": "S1", "llm": False})
     md = data["CASES"][0]["TABLE_MD"]
     lines = md.splitlines()
-    assert lines[0] == ("| Rank | Supplier | Expected cost (Rp juta) | Price/kg | Lead days | "
-                        "Marks |")
-    assert lines[1] == "|---|---|---|---|---|---|"
+    assert lines[0] == "| Rank | Supplier | Expected cost (Rp juta) | Notes |"   # A3: 4 columns
+    assert lines[1] == "|---|---|---|---|"
     rows = [l for l in lines[2:] if l.startswith("| ")]
     # top 3, the lowest-price supplier 100105 (rank 5, named in SUMMARY) and the keep row
     assert len(rows) == 5 and rows[0].startswith("| 1 | 100109 | ")

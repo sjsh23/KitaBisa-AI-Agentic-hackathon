@@ -60,7 +60,15 @@ def override_phrase(scenario: str, lifnr: str) -> str:
 
 
 def run_phrase(scenario: str = "S1") -> str:
+    if scenario.upper() == "ALL":
+        return RUN_ALL_PHRASE
     return f"Run GESIT on scenario {scenario}"
+
+
+RUN_ALL_PHRASE = "Run GESIT on all scenarios"
+STATUS_PHRASE = "Is GESIT ready?"
+EVALUATION_PHRASE = "How does GESIT compare with simple rules?"
+WHICH_SCENARIO = "Which scenario: S1, S2, S3 or all?"
 
 
 PENDING_PHRASE = "Show pending approvals"
@@ -121,7 +129,7 @@ def table_view(case: dict[str, Any]) -> list[dict[str, Any]]:
     return [row_view(r) for r in shown]
 
 
-MD_COLUMNS = ("Rank", "Supplier", "Expected cost (Rp juta)", "Price/kg", "Lead days", "Marks")
+MD_COLUMNS = ("Rank", "Supplier", "Expected cost (Rp juta)", "Notes")   # A3: 4 columns
 MD_SIMULATED = "All numbers simulated."
 MD_MAX_BYTES = 3_000   # top-level TABLE_MD
 PLAN_MD_MAX_BYTES = 1_000
@@ -130,6 +138,13 @@ PLAN_MD_MAX_BYTES = 1_000
 def juta(amount: int | float) -> str:
     """An IDR amount in Rp juta with one decimal: 178921875 -> "178.9"."""
     return f"{amount / 1_000_000:,.1f}"
+
+
+def notes(row: dict[str, Any]) -> str:
+    """The Notes column: price per kg, lead days, then the marks ("Rp17,550/kg, 3 d, fastest")."""
+    marks_text = short_marks(row)
+    return f"Rp{row['NETPR']:,}/kg, {row['LEAD_DAYS']} d" + ("" if marks_text == "-"
+                                                            else f", {marks_text}")
 
 
 def short_marks(row: dict[str, Any]) -> str:
@@ -169,10 +184,9 @@ def table_md(case: dict[str, Any], short: bool = False, explanation: bool = True
     for r in shown:
         supplier = (f"keep PO {r['KEEP_EBELN']} ({r['LIFNR']})"
                     if r["OPTION"] == supplier_score.OPTION_KEEP else r["LIFNR"])
-        lines.append(f"| {r['RANK']} | {supplier} | {juta(r['EXPECTED_COST'])} | "
-                     f"Rp{r['NETPR']:,} | {r['LEAD_DAYS']} | {short_marks(r)} |")
+        lines.append(f"| {r['RANK']} | {supplier} | {juta(r['EXPECTED_COST'])} | {notes(r)} |")
     if not shown:
-        lines.append("| - | no candidate supplier | - | - | - | - |")
+        lines.append("| - | no candidate supplier | - | - |")
     lines += ["", MD_SIMULATED]
     text = case.get("EXPLANATION")
     if explanation and text:
@@ -262,8 +276,9 @@ def plan_md(plan: dict[str, Any]) -> str:
     """B3: the supervisor's steps for the chat: agent, status, seconds, SAP-RPT called or
     cached, model texts; under PLAN_MD_MAX_BYTES."""
     total = plan.get("TOTAL_SECONDS")
-    lines = [f"**Agents at work** (supervisor plan {plan['PLAN_ID'] or '-'}, Strands Graph"
-             + (f", {total:.1f} s" if total is not None else "") + ")"]
+    blocks = [f"**Agents at work** (supervisor plan {plan['PLAN_ID'] or '-'}, Strands Graph"
+              + (f", {total:.1f} s" if total is not None else "") + ")"]
+    items = []
     for s in plan["STEPS"]:
         bits = [s["STATUS"] + (f" in {s['SECONDS']:.1f} s" if s["SECONDS"] is not None else "")]
         if s.get("SAP_RPT"):
@@ -271,15 +286,16 @@ def plan_md(plan: dict[str, Any]) -> str:
         texts = sum(1 for c in s.get("CALLS", []) if c["KIND"] == "GEN_AI_HUB")
         if texts:
             bits.append(f"{texts} model text{'s' if texts != 1 else ''}")
-        lines.append(f"{s['NO']}. {s['AGENT']}: {', '.join(bits)}")
-    lines.append(f"Evaluation and Learning: offline (Monte Carlo, eval/monte_carlo.py).")
+        items.append(f"- Step {s['NO']}, {s['AGENT']}: {', '.join(bits)}")
+    blocks.append("\n".join(items))   # a list after a blank line, so the chat keeps the lines
+    blocks.append("Evaluation and Learning: offline (Monte Carlo, eval/monte_carlo.py).")
     outcome = plan.get("OUTCOME")
     if outcome:
-        lines.append(f"Stop: {outcome['TEXT']}")
-    text = "\n".join(lines)
-    while len(text.encode()) >= PLAN_MD_MAX_BYTES and len(lines) > 2:
-        lines.pop()
-        text = "\n".join(lines)
+        blocks.append(f"Stop: {outcome['TEXT']}")
+    text = "\n\n".join(blocks)
+    while len(text.encode()) >= PLAN_MD_MAX_BYTES and len(blocks) > 2:
+        blocks.pop()
+        text = "\n\n".join(blocks)
     return text
 
 
@@ -506,9 +522,12 @@ def deny_next_steps(decision: dict[str, Any], ebeln: str) -> str:
 
 
 def approve_summary(po: dict[str, Any], by: str, role: str = "manager") -> str:
-    who = f"{by} (the buyer's one-click, within policy)" if role == "buyer" else by
-    return (f"PO {po['EBELN']} (supplier {po['LIFNR']}, NETWR {rp(po['NETWR'])}) is approved "
-            f"and released by {who}. The buyer now changes the old PO {po['REPLACES_EBELN']} in "
+    """A5: a manager's and a buyer's approval both end in RELEASED (`release_po`, FR-ACT-2,
+    FR-ACT-3); only who approved differs, and SUMMARY says so."""
+    who = (f"the buyer {by}, one-click within policy" if role == "buyer"
+           else f"the procurement manager {by}")
+    return (f"PO {po['EBELN']} (supplier {po['LIFNR']}, NETWR {rp(po['NETWR'])}) is RELEASED, "
+            f"approved by {who}. The buyer now changes the old PO {po['REPLACES_EBELN']} in "
             "S/4 as the draft says.")
 
 
@@ -531,7 +550,7 @@ def reject_next_steps(po: dict[str, Any], option: dict[str, Any] | None,
                       scenario_of: dict[str, str]) -> str:
     sid = scenario_of.get(po["REPLACES_EBELN"], "S1")
     if option and option.get("OPTION") == supplier_score.OPTION_NEW_PO:
-        return say(override_phrase(sid, option["LIFNR"]), run_phrase(sid))
+        return say(override_phrase(sid, option["LIFNR"]))
     return say(run_phrase(sid), PENDING_PHRASE)
 
 
@@ -559,49 +578,66 @@ def flags_view(flags: dict[str, Any]) -> dict[str, Any]:
                                   "OVERRIDES_TOTAL", "OVERRIDES_BY_BUYER", "OVERRIDES_BY_CHOSEN")}
 
 
-def flags_sentences(flags: dict[str, Any]) -> list[str]:
+def pair_text(flag: dict[str, Any]) -> str:
+    rate = (f"{flag['RATIO']:.1f}x the expected rate" if flag.get("RATIO") is not None
+            else "while other buyers place none with this supplier")
+    return (f"{flag['BUYER']} with {flag['SUPPLIER']}, {flag['K']} of {flag['N_B']} POs, {rate} "
+            "(simulated)")
+
+
+def flags_sentences(flags: dict[str, Any], buyer: str | None = None,
+                    supplier: str | None = None) -> list[str]:
+    """A4: with an override, first whether that buyer's own pair with the chosen supplier is
+    flagged, then the other flagged pairs, so another buyer's flag never reads as theirs."""
     out = [f"{flags['PAIRS_TESTED']} buyer and supplier pairs tested, {flags['PAIRS_FLAGGED']} "
            "flagged for review."]
-    out += [flag_sentence(f) for f in flags["FLAGS"]]
-    if flags["FLAGS"]:
+    flagged = flags["FLAGS"]
+    if buyer and supplier:
+        own = next((f for f in flagged if f["BUYER"] == buyer and f["SUPPLIER"] == supplier), None)
+        out.append(f"{buyer} with {supplier} is flagged for review: {pair_text(own)}."
+                   if own else f"{buyer} with {supplier} is not flagged.")
+        others = [f for f in flagged if f is not own]
+        if others:
+            out.append("Other flagged pairs: " + "; ".join(pair_text(f) for f in others) + ".")
+    else:
+        out += [flag_sentence(f) for f in flagged]
+    if flagged:
         out.append(NEUTRAL_NOTE)
     return out
 
 
 def integrity_md(flags: dict[str, Any], overrides: list[dict[str, Any]]) -> str:
     """B4: the flagged pairs and the latest overrides as small Markdown tables."""
-    lines = ["| Buyer | Supplier | POs with supplier | Share | Other buyers | Ratio |",
-             "|---|---|---|---|---|---|"]
+    lines = ["| Buyer and supplier | POs with the supplier | Share against other buyers | "
+             "Ratio |", "|---|---|---|---|"]
     for f in flags["FLAGS"]:
         ratio = "-" if f.get("RATIO") is None else f"{f['RATIO']:.1f}x"
-        lines.append(f"| {f['BUYER']} | {f['SUPPLIER']} | {f['K']} of {f['N_B']} | "
-                     f"{f['SHARE_B']:.1%} | {f['SHARE_OTHERS']:.1%} | {ratio} |")
+        lines.append(f"| {f['BUYER']} with {f['SUPPLIER']} | {f['K']} of {f['N_B']} | "
+                     f"{f['SHARE_B']:.1%} against {f['SHARE_OTHERS']:.1%} | {ratio} |")
     if not flags["FLAGS"]:
-        lines.append("| - | no pair meets the rule | - | - | - | - |")
+        lines.append("| - | no pair meets the rule | - | - |")
     lines += ["", f"Pairs tested: {flags['PAIRS_TESTED']}. Flags are for review, never a block."]
     if overrides:
-        lines += ["", "| Override | Buyer | PO | Recommended | Chosen | Extra cost (Rp juta) | "
-                      "Justification |", "|---|---|---|---|---|---|---|"]
+        lines += ["", "| Override | Buyer, PO | Choice and justification | Extra cost (Rp juta) |",
+                  "|---|---|---|---|"]
         for o in overrides:
             text = o["JUSTIFICATION"]
             text = text if len(text) <= 60 else text[:57] + "..."
-            lines.append(f"| {o['OVERRIDE_ID']} | {o['BUYER']} | {o['EBELN']} | "
-                         f"{o['RECOMMENDED']} | {o['CHOSEN']} | {juta(o['COST_DIFFERENCE'])} | "
-                         f"{text.replace('|', '/')} |")
+            lines.append(f"| {o['OVERRIDE_ID']} | {o['BUYER']}, {o['EBELN']} | {o['CHOSEN']} "
+                         f"instead of {o['RECOMMENDED']}: \"{text.replace('|', '/')}\" | "
+                         f"{juta(o['COST_DIFFERENCE'])} |")
     lines += ["", MD_SIMULATED]
     return "\n".join(lines)
 
 
 def integrity_summary(flags: dict[str, Any], overrides: list[dict[str, Any]]) -> str:
-    sentences = flags_sentences(flags)
-    if overrides:
-        last = overrides[-1]
-        sentences.append(f"Overrides logged: {flags['OVERRIDES_TOTAL']}; the latest, "
-                         f"{last['OVERRIDE_ID']}, chose {last['CHOSEN']} instead of "
-                         f"{last['RECOMMENDED']}.")
-    else:
-        sentences.append("No override is logged.")
-    return " ".join(sentences)
+    """A4: the latest override first, with its own pair, then the other flagged pairs."""
+    if not overrides:
+        return " ".join(flags_sentences(flags) + ["No override is logged."])
+    last = overrides[-1]
+    head = [f"Overrides logged: {flags['OVERRIDES_TOTAL']}; the latest, {last['OVERRIDE_ID']}, "
+            f"{last['BUYER']} chose {last['CHOSEN']} instead of {last['RECOMMENDED']}."]
+    return " ".join(head + flags_sentences(flags, last["BUYER"], last["CHOSEN"]))
 
 
 def override_summary(*, choice: dict[str, Any] | None, record: dict[str, Any] | None,
@@ -620,5 +656,85 @@ def override_summary(*, choice: dict[str, Any] | None, record: dict[str, Any] | 
                      "nothing was logged."]
     sentences.append(next_sentence)
     sentences += supersede
-    sentences += flags_sentences(flags)
+    sentences += flags_sentences(flags, record["BUYER"] if record else None,
+                                 record["CHOSEN"] if record else None)
     return " ".join(sentences)
+
+
+# ------------------------------------------------------------------------ status
+def status_summary(warm: dict[str, Any], open_drafts: int) -> str:
+    """B2: is GESIT ready for the demo?"""
+    drafts = f"{open_drafts} open draft{'s' if open_drafts != 1 else ''}"
+    failed = [s for s in warm.get("STEPS", []) if str(s["RESULT"]).startswith("failed")]
+    state = warm.get("STATUS")
+    if state in ("starting", "running"):
+        done = len(warm.get("STEPS", []))
+        return (f"GESIT is warming up ({done} of 3 steps done), {drafts}. Ask again in about "
+                "20 seconds.")
+    if state == "off":
+        return f"GESIT is up: warm-up off, {drafts}. The first run calls SAP-RPT and takes longer."
+    if failed:
+        return (f"GESIT is up, but the warm-up step {failed[0]['STEP']} failed, {drafts}: "
+                f"{failed[0]['RESULT']}.")
+    return f"GESIT is ready: warm-up done, {drafts}."
+
+
+# -------------------------------------------------------------------- evaluation
+EVAL_NAMES = {"GESIT_LEARNING": "GESIT with learning", "GESIT_RPT_ONLY": "GESIT with SAP-RPT only",
+              "ALWAYS_CHEAPEST": "always cheapest", "ALWAYS_FASTEST": "always fastest",
+              "KEEP_CURRENT_PO": "keep the PO"}
+ABOUT_EQUAL_SHARE = 0.03   # a mean gap within 3% of the baseline's cost reads "about equal"
+
+
+def juta_sim(amount_juta: float) -> str:
+    return f"Rp{amount_juta:,.1f} juta (simulated)"
+
+
+def evaluation_summary(data: dict[str, Any]) -> str:
+    """B3: the comparison with simple rules, in the words of PRD section 4 ("tested against
+    baselines in simulation"), every figure from the eval/ summary file."""
+    tracked = data["TRACKED_TOTAL_JUTA"]
+    worlds = data["WORLDS"]
+    vs = worlds["VERSUS"]["GESIT_LEARNING"]
+    n = worlds["COUNT"]
+
+    def against(key: str) -> str:
+        v = vs[key]
+        higher = v["OF"] - v["CHEAPER_IN"] - v["EQUAL_IN"]
+        mean = v["MEAN_DIFF_JUTA"]
+        direction = "lower" if mean < 0 else "higher"
+        about = abs(mean) <= ABOUT_EQUAL_SHARE * data["WORLDS"]["MEAN_TOTAL_JUTA"][key]
+        return (f"{'about equal to' if about else 'against'} {EVAL_NAMES[key]}: cheaper in "
+                f"{v['CHEAPER_IN']}, equal in {v['EQUAL_IN']}, higher in {higher} of {n} worlds, "
+                f"{juta_sim(abs(mean))} {direction} on average")
+
+    return " ".join([
+        f"GESIT was tested against simple rules in simulation (seed {data['SEED']}, "
+        f"{data['RUNS']:,} runs per strategy, {n} simulated worlds).",
+        f"With learning it costs less than always cheapest in {vs['ALWAYS_CHEAPEST']['CHEAPER_IN']} "
+        f"of {n} worlds and less than keeping the PO in {vs['KEEP_CURRENT_PO']['CHEAPER_IN']} "
+        f"of {n}; it is {against('ALWAYS_FASTEST')}.",
+        f"Tracked data, total over S1 to S3: GESIT with learning "
+        f"{juta_sim(tracked['GESIT_LEARNING'])}, always fastest "
+        f"{juta_sim(tracked['ALWAYS_FASTEST'])}, always cheapest "
+        f"{juta_sim(tracked['ALWAYS_CHEAPEST'])}.",
+        "The value is the explanation, the policy checks and the human decision, not a lower cost "
+        "in every world.",
+    ])
+
+
+def evaluation_md(data: dict[str, Any]) -> str:
+    """B3: per strategy the tracked total and the 11-world counts for GESIT with learning."""
+    tracked = data["TRACKED_TOTAL_JUTA"]
+    vs = data["WORLDS"]["VERSUS"]["GESIT_LEARNING"]
+    n = data["WORLDS"]["COUNT"]
+    lines = ["| Strategy | Tracked total (Rp juta) | GESIT with learning cheaper in | Mean gap "
+             "(Rp juta) |", "|---|---|---|---|"]
+    for key, name in EVAL_NAMES.items():
+        v = vs.get(key)
+        counts = (f"{v['CHEAPER_IN']} of {n} worlds, equal in {v['EQUAL_IN']}" if v else "-")
+        gap = (f"{v['MEAN_DIFF_JUTA']:+,.1f}" if v else "-")
+        lines.append(f"| {name} | {tracked[key]:,.1f} | {counts} | {gap} |")
+    lines += ["", "Mean gap = GESIT with learning minus the strategy, averaged over the worlds; "
+                  "negative means GESIT costs less.", MD_SIMULATED]
+    return "\n".join(lines)

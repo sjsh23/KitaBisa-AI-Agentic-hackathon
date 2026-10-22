@@ -165,6 +165,8 @@ def _check_text(check: dict[str, Any]) -> str:
         text += ", contains em or en dashes"
     if check.get("REPEATED_PHRASES"):
         text += f", repeated wording: {'; '.join(check['REPEATED_PHRASES'])}"
+    if check.get("AMBIGUOUS_ALSO"):
+        text += f", 'It is also' after another supplier: {'; '.join(check['AMBIGUOUS_ALSO'])}"
     return text + (", passed" if check["PASSED"] else ", FAILED")
 
 

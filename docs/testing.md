@@ -68,7 +68,7 @@ git diff --cached --name-only
 py -3.11 -m pytest -q
 ```
 
-Expected: `398 passed` (22 October 2026). The tests never call the network: SAP-RPT, SAP AI Core and the reasoning models are replaced by fakes.
+Expected: `424 passed` (22 October 2026). The tests never call the network: SAP-RPT, SAP AI Core and the reasoning models are replaced by fakes.
 
 | Test file | What it proves | Requirements |
 |---|---|---|
@@ -91,6 +91,7 @@ Expected: `398 passed` (22 October 2026). The tests never call the network: SAP-
 | `tests/test_api_edge_cases.py` | C1 to C6 below, on modified copies of the data in a temp folder | FR-SEL-1, FR-SEL-2, FR-ACT-1, FR-ACT-2, POL-2, FR-INT-1, D-1 |
 | `tests/test_api_flows.py` | One scripted chat: reset, run S1, approvals, short and valid reject, short and valid override, the same override again (supersedes), run S3, buyer approval, run S2 (keep), integrity, reset | PRD section 12 |
 | `tests/test_joule_files.py` | ui/joule: every file parses, every scenario targets an existing function, every slot copies the user's words and asks, every function calls a real API route and shows SUMMARY | Joule UI |
+| `tests/test_api_demo.py` | "also the fastest" in the opening sentence, the check failing on "It is also", whole percents; 4-column tables; the overriding buyer's own pair first; RELEASED for manager and buyer; "Which scenario" 422; GET /status; GET /evaluation from the summary file, honest wording, the api_summary builder, the API never imports eval or reads _truth; the override phrase after a reject | FR-SEL-4, FR-ACT-2, FR-ACT-3, FR-INT-4, FR-EVA-4, D-1, D-3 |
 | `tests/test_supervisor.py` | Plan steps for S1, S2, S3, all and scan (Integrity Guard before Action with `--choose`); the graph is a Strands Graph of Python nodes with fixed edges; each stop rule (nothing flagged, keep everywhere, no candidate for one case and for every case, policy deny hands back to the manager, short justification); a failed step is marked FAILED; the supervisor never calls `release_po`; the plan log line is JSON with every step, STATUS and SECONDS; the CLI prints the `agents.run` report after the plan | FR-SUP-1 to FR-SUP-3, FR-ACT-2, POL-4 |
 | `tests/test_approvals.py` | PO store saved and loaded by a second store object, numbers continue from the file, memory mode writes nothing, clear; S1 across two processes approved and rejected; next option from the saved table (rank 2, rank 1 after a rejected override, keep when it ranked higher); reject as its own decision log entry, overrides unchanged; agent denied approve and reject (POL-4), buyer denied reject (POL-1), reason under 20 characters refused; every double action changes nothing; CLI list, reject, approve | FR-ACT-2, FR-ACT-3, POL-1, POL-4, FR-INT-1 |
 
@@ -340,6 +341,38 @@ after that, measured locally on 22 Oct 2026 with the real services:
 Every number, ranked table, draft and SUMMARY was identical before and after; the model texts
 are written live on every run. Without the warm-up (`GESIT_WARMUP=0`) the first S1 run took
 12.6 s and the next one 4.5 s.
+
+### Demo checklist (in this order)
+
+1. `cf app gesit-api` shows the app running (1 of 1 instances, state running).
+2. In Joule: "Is GESIT ready?" answers "GESIT is ready: warm-up done, 0 open drafts." If it
+   says warming up, wait 20 seconds and ask again.
+3. "Reset the GESIT demo".
+4. One warm run: "Run GESIT on scenario S1", then "Reset the GESIT demo" again (the SAP-RPT
+   answers stay cached; the PO store, plan log and decision log are empty).
+5. The presenter's phrases, in order:
+   1. "Run GESIT on scenario S1" (delay notice, draft above Rp150,000,000, simulated, waits
+      for the manager; the table, the explanation and the agents at work).
+   2. "Show pending approvals".
+   3. "Reject purchase order 4500000435. Reason: the price is too high this quarter".
+   4. "Override scenario S1 with supplier 100108. Justification: 100108 has a long-term
+      contract with our plant" (Integrity Guard, own pair not flagged, other flagged pairs).
+   5. "Show integrity flags".
+   6. "Approve purchase order 4500000436" (the manager; RELEASED).
+   7. "Run GESIT on scenario S3" (capacity shortfall, within policy), then "Approve purchase
+      order 4500000437 as the buyer".
+   8. "Run GESIT on scenario S2" (keep the PO, nothing drafted).
+   9. "How does GESIT compare with simple rules?".
+   10. "Reset the GESIT demo".
+
+### Evaluation summary for GET /evaluation
+
+Regenerate it (about 5 minutes, real SAP-RPT) whenever the data, the scoring or the agents
+change, and commit the file:
+
+```bash
+python -m eval.monte_carlo --scenario all --worlds predeclared --runs 1000 --seed 42 --summary --api-summary integrations/api/evaluation_summary.json
+```
 
 ### Edge cases (Q&A, tested offline in `tests/test_api_edge_cases.py`)
 

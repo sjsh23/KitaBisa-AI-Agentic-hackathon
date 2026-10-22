@@ -1,0 +1,107 @@
+{
+  "simulated": true,
+  "DATA_NOTE": "simulated data, tested against baselines in simulation (FR-EVA-4)",
+  "COMMAND": "python -m eval.monte_carlo --scenario all --worlds predeclared --runs 1000 --seed 42 --summary --api-summary integrations/api/evaluation_summary.json",
+  "SEED": 42,
+  "RUNS": 1000,
+  "TRACKED_TOTAL_JUTA": {
+    "GESIT_RPT_ONLY": 545.1,
+    "GESIT_LEARNING": 469.0,
+    "ALWAYS_CHEAPEST": 560.3,
+    "ALWAYS_FASTEST": 458.2,
+    "KEEP_CURRENT_PO": 2156.7
+  },
+  "TRACKED_P_ANY_OUT": {
+    "GESIT_RPT_ONLY": 0.252,
+    "GESIT_LEARNING": 0.042,
+    "ALWAYS_CHEAPEST": 0.089,
+    "ALWAYS_FASTEST": 0.012,
+    "KEEP_CURRENT_PO": 1.0
+  },
+  "WORLDS": {
+    "COUNT": 11,
+    "USED": [
+      "tracked (seed 42)",
+      "seed 1",
+      "seed 2",
+      "seed 3",
+      "seed 4",
+      "seed 5",
+      "seed 6",
+      "seed 7",
+      "seed 8",
+      "seed 9",
+      "seed 10"
+    ],
+    "EXCLUDED": [],
+    "MEAN_TOTAL_JUTA": {
+      "GESIT_RPT_ONLY": 476.0,
+      "GESIT_LEARNING": 467.6,
+      "ALWAYS_CHEAPEST": 532.5,
+      "ALWAYS_FASTEST": 459.2,
+      "KEEP_CURRENT_PO": 2172.5
+    },
+    "VERSUS": {
+      "GESIT_RPT_ONLY": {
+        "ALWAYS_CHEAPEST": {
+          "CHEAPER_IN": 9,
+          "EQUAL_IN": 0,
+          "OF": 11,
+          "MEAN_DIFF_JUTA": -56.5,
+          "MIN_DIFF_JUTA": -118.9,
+          "MAX_DIFF_JUTA": 47.4
+        },
+        "ALWAYS_FASTEST": {
+          "CHEAPER_IN": 2,
+          "EQUAL_IN": 5,
+          "OF": 11,
+          "MEAN_DIFF_JUTA": 16.8,
+          "MIN_DIFF_JUTA": -1.9,
+          "MAX_DIFF_JUTA": 87.0
+        },
+        "KEEP_CURRENT_PO": {
+          "CHEAPER_IN": 11,
+          "EQUAL_IN": 0,
+          "OF": 11,
+          "MEAN_DIFF_JUTA": -1696.5,
+          "MIN_DIFF_JUTA": -1735.1,
+          "MAX_DIFF_JUTA": -1611.5
+        }
+      },
+      "GESIT_LEARNING": {
+        "ALWAYS_CHEAPEST": {
+          "CHEAPER_IN": 9,
+          "EQUAL_IN": 0,
+          "OF": 11,
+          "MEAN_DIFF_JUTA": -64.9,
+          "MIN_DIFF_JUTA": -118.9,
+          "MAX_DIFF_JUTA": 47.4
+        },
+        "ALWAYS_FASTEST": {
+          "CHEAPER_IN": 3,
+          "EQUAL_IN": 5,
+          "OF": 11,
+          "MEAN_DIFF_JUTA": 8.4,
+          "MIN_DIFF_JUTA": -9.5,
+          "MAX_DIFF_JUTA": 83.5
+        },
+        "KEEP_CURRENT_PO": {
+          "CHEAPER_IN": 11,
+          "EQUAL_IN": 0,
+          "OF": 11,
+          "MEAN_DIFF_JUTA": -1704.9,
+          "MIN_DIFF_JUTA": -1737.5,
+          "MAX_DIFF_JUTA": -1624.0
+        },
+        "GESIT_RPT_ONLY": {
+          "CHEAPER_IN": 3,
+          "EQUAL_IN": 8,
+          "OF": 11,
+          "MEAN_DIFF_JUTA": -8.4,
+          "MIN_DIFF_JUTA": -76.2,
+          "MAX_DIFF_JUTA": 0.0
+        }
+      }
+    }
+  }
+}

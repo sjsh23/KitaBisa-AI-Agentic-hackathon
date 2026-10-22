@@ -29,7 +29,7 @@ def routes(tmp_path_factory):
 
 
 def test_every_scenario_targets_an_existing_function():
-    assert len(SCENARIOS) == 8
+    assert len(SCENARIOS) == 11
     for path in SCENARIOS:
         scenario = load(path)
         assert scenario["description"]
@@ -58,10 +58,31 @@ def test_every_function_calls_a_real_route_and_shows_summary(routes):
 
 
 def test_run_shows_summary_table_and_plan():
-    actions = load(FUNCTIONS["run_scenario_function"])["action_groups"][0]["actions"]
+    for name in ("run_scenario_function", "run_all_function"):
+        actions = load(FUNCTIONS[name])["action_groups"][0]["actions"]
+        assert [a["message"]["content"] for a in actions[1:]] == [
+            "<? apiResponse.body.SUMMARY ?>", "<? apiResponse.body.TABLE_MD ?>",
+            "<? apiResponse.body.PLAN_MD ?>"], name
+
+
+def test_one_scenario_and_all_are_separate():
+    """B1: the one-scenario slot never takes all; all has its own scenario without a slot."""
+    one = load(CAPABILITY / "scenarios" / "run_scenario_scenario.yaml")
+    [slot] = one["slots"]
+    assert "one of S1, S2 or S3" in slot["description"] and "Never use all" in slot["description"]
+    every = load(CAPABILITY / "scenarios" / "run_all_scenario.yaml")
+    assert "slots" not in every and every["target"]["name"] == "run_all_function"
+    body = load(FUNCTIONS["run_all_function"])["action_groups"][0]["actions"][0]["body"]
+    assert '"scenario": "all"' in body
+
+
+def test_status_and_evaluation_scenarios():
+    status = load(CAPABILITY / "scenarios" / "status_scenario.yaml")
+    assert status["target"]["name"] == "status_function"
+    actions = load(FUNCTIONS["evaluation_function"])["action_groups"][0]["actions"]
+    assert actions[0]["path"] == "/evaluation"
     assert [a["message"]["content"] for a in actions[1:]] == [
-        "<? apiResponse.body.SUMMARY ?>", "<? apiResponse.body.TABLE_MD ?>",
-        "<? apiResponse.body.PLAN_MD ?>"]
+        "<? apiResponse.body.SUMMARY ?>", "<? apiResponse.body.TABLE_MD ?>"]
 
 
 def test_buyer_and_manager_approve_send_different_actors():

@@ -151,8 +151,11 @@ def test_override_summary_names_the_gap_the_flags_and_stays_neutral(client):
     text = data["SUMMARY"]
     assert re.search(r"100108 has an expected cost Rp[\d,]+ higher than the recommended 100109 "
                      r"\(simulated\)\.", text)
-    assert ("Flagged for review: BUYER03 with 100107, 27 of 113 POs, 7.7x the expected rate "
+    # A4: the overriding buyer's own pair first, then the others
+    assert "BUYER01 with 100108 is not flagged." in text
+    assert ("Other flagged pairs: BUYER03 with 100107, 27 of 113 POs, 7.7x the expected rate "
             "(simulated).") in text
+    assert text.index("BUYER01 with 100108 is not flagged") < text.index("Other flagged pairs")
     assert "not a finding" in text
     for word in ("fraud", "suspicious", "corrupt", "guilty", "violation"):
         assert word not in text.lower()
@@ -201,7 +204,7 @@ def test_buyer_approves_a_draft_within_policy(client):
     draft = run(client, "S3")["DRAFTS"][0]
     data = call(client, "POST", f"/approvals/{draft['EBELN']}/approve", {"as": "BUYER"})
     assert data["RELEASED_BY"] == draft["BUYER"] == "BUYER04"
-    assert "the buyer's one-click, within policy" in data["SUMMARY"]
+    assert "is RELEASED, approved by the buyer BUYER04, one-click within policy" in data["SUMMARY"]
 
 
 def test_buyer_above_the_threshold_gets_a_clear_403(client):
@@ -219,8 +222,9 @@ def test_plan_md_shows_the_agents_at_work(client):
     md = data["PLAN_MD"]
     assert len(md.encode()) < 1_000
     assert md.startswith("**Agents at work** (supervisor plan PLAN-001, Strands Graph")
-    for line in ("1. Disruption Detection: DONE in", "2. Supplier Evaluation: DONE in",
-                 "3. Action: DONE in", "Evaluation and Learning: offline"):
+    for line in ("- Step 1, Disruption Detection: DONE in", "- Step 2, Supplier Evaluation: DONE in",
+                 "- Step 3, Action: DONE in", "\n\nEvaluation and Learning: offline",
+                 "\n\nStop: "):
         assert line in md
     assert len(run(client, "all", llm=True)["PLAN_MD"].encode()) < 1_000
 
@@ -232,8 +236,11 @@ def test_plan_md_names_sap_rpt_called_or_cached():
         {"NO": 2, "AGENT": "Supplier Evaluation", "STATUS": "DONE", "SECONDS": 4.2,
          "SAP_RPT": "SAP-RPT: called", "CALLS": [{"KIND": "GEN_AI_HUB"}, {"KIND": "GEN_AI_HUB"}]}]}
     md = views.plan_md(plan)
-    assert "1. Disruption Detection: DONE in 0.0 s, SAP-RPT: cached" in md
-    assert "2. Supplier Evaluation: DONE in 4.2 s, SAP-RPT: called, 2 model texts" in md
+    assert "- Step 1, Disruption Detection: DONE in 0.0 s, SAP-RPT: cached" in md
+    assert "- Step 2, Supplier Evaluation: DONE in 4.2 s, SAP-RPT: called, 2 model texts" in md
+    blocks = md.split("\n\n")   # A2: header, the step list, Evaluation and Learning
+    assert blocks[0].startswith("**Agents at work**") and blocks[1].count("\n- Step ") == 1
+    assert blocks[2].startswith("Evaluation and Learning")
 
 
 # ------------------------------------------------------------------ B4 integrity
@@ -244,7 +251,10 @@ def test_integrity_endpoint(client):
     assert "BUYER03 with 100107" in data["SUMMARY"] and "not a finding" in data["SUMMARY"]
     assert "OVR-4500000431-001" in data["SUMMARY"]
     md = data["TABLE_MD"]
-    assert "| BUYER03 | 100107 | 27 of 113 |" in md and "| OVR-4500000431-001 | BUYER01 |" in md
+    assert "| BUYER03 with 100107 | 27 of 113 |" in md
+    assert "| OVR-4500000431-001 | BUYER01, 4500000431 | 100108 instead of 100109:" in md
+    assert all(line.count("|") <= 5 for line in md.splitlines())   # A3: at most 4 columns
+    assert "BUYER01 with 100108 is not flagged." in data["SUMMARY"]
     assert md.endswith("All numbers simulated.") and len(md.encode()) < 3_000
     assert data["LATEST_OVERRIDES"][0]["JUSTIFICATION"] == JUSTIFICATION
 

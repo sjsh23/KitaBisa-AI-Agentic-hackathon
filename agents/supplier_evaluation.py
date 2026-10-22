@@ -71,8 +71,8 @@ KEEP_CURRENT_ORDER, CHEAPEST and FASTEST, for each one that is present. Each sen
 gives the cost difference and the reason; do not reword it or add words around its figures.
 - If RECOMMENDED_IS_KEEP is true, OPENING already says to keep the current order: write no \
 other sentence about keeping it.
-- If RECOMMENDED_IS_CHEAPEST is true, say it is also the cheapest option; if \
-RECOMMENDED_IS_FASTEST is true, say it is also the fastest option.
+- OPENING already says when the recommendation is also the cheapest or the fastest \
+option. Never write a sentence that starts with "It is also".
 - If TRACK_RECORD_WARNING is present, copy it word for word, with its full stop.
 - If PREDICTION_NOTE is present, copy it word for word, with its full stop.
 - If FASTEST_NOTE is present, copy it word for word, with its full stop.
@@ -358,7 +358,7 @@ def _row_facts(row: dict[str, Any], qty: float, remainder: bool = False) -> dict
         "RANK": f"rank {row['RANK']}, score {row['SCORE']}",
         "PRICE": f"{rp(row['NETPR'])} per kg" + (" (current order price)" if keep else ""),
         "ARRIVAL": f"arrives {row['ARRIVAL']}",
-        "LATE_RISK": f"{row['P_LATE_PCT']}% chance of arriving late",
+        "LATE_RISK": f"{pct_text(row['P_LATE_PCT'])} chance of arriving late",
         "STOCKOUT": f"{row['EXPECTED_STOCKOUT_DAYS']} expected days without stock",
         "PURCHASE_COST": f"purchase cost {rp(row['PURCHASE_COST'])}",
         "RISK_COST": f"risk cost {rp(row['RISK_COST'])}",
@@ -409,10 +409,10 @@ def _versus_facts(row: dict[str, Any], best: dict[str, Any], qty: float,
     """A comparison row: its phrases plus how it compares with #1 (never a negative amount).
     `subject` opens the ready-made SENTENCE, for example "The cheapest option, supplier 100105"."""
     diff = supplier_score.compare_to_best(row, best)
-    gap = f"{rp(diff['EXPECTED_COST_GAP'])} more ({diff['EXPECTED_COST_GAP_PCT']}% more)"
+    pct = pct_text(diff["EXPECTED_COST_GAP_PCT"])
+    gap = f"{rp(diff['EXPECTED_COST_GAP'])} more ({pct} more)"
     versus = {
-        "EXPECTED_COST": (f"{rp(diff['EXPECTED_COST_GAP'])} more expected cost "
-                          f"({diff['EXPECTED_COST_GAP_PCT']}% more)"),
+        "EXPECTED_COST": f"{rp(diff['EXPECTED_COST_GAP'])} more expected cost ({pct} more)",
         "NEAR_TIE": diff["NEAR_TIE"],
         "PURCHASE": _phrase(diff["PURCHASE"]),
         "RISK": _phrase(diff["RISK"]),
@@ -446,7 +446,9 @@ def facts_for_llm(case: dict[str, Any], report: dict[str, Any]) -> dict[str, Any
         "CANDIDATES": (f"{sum(not is_keep(r) for r in rows)} suppliers ranked"
                        + (f", plus keeping {keep_words(keep, remainder, ebeln=False)}"
                           if keep else "")),
-        "OPENING": opening_sentence(best, remainder),
+        "OPENING": opening_sentence(best, remainder,
+                                    also=[w for w, on in (("cheapest", best is cheapest),
+                                                          ("fastest", best is fastest)) if on]),
         "RECOMMENDED": _row_facts(best, qty, remainder),
         "RECOMMENDED_IS_KEEP": best is keep,
         "RECOMMENDED_IS_CHEAPEST": best is cheapest,
@@ -475,14 +477,26 @@ def facts_for_llm(case: dict[str, Any], report: dict[str, Any]) -> dict[str, Any
     return facts
 
 
-def opening_sentence(best: dict[str, Any], remainder: bool = False) -> str:
+def pct_text(pct: float) -> str:
+    """A gap in percent for the explanation, rounded to a whole percent (amounts stay exact):
+    564.13 -> "564%", 0.4 -> "less than 1%"."""
+    return "less than 1%" if pct < 1 else f"{round(pct):,}%"
+
+
+def opening_sentence(best: dict[str, Any], remainder: bool = False,
+                     also: list[str] | None = None) -> str:
     """The explanation's first sentence, built in code so the model does not word the
-    recommendation itself (it wrote "Its expected cost is expected cost Rp ...")."""
+    recommendation itself (it wrote "Its expected cost is expected cost Rp ..."). `also`
+    ("cheapest", "fastest") is said here, about #1, never in a later sentence that could
+    read as being about another supplier."""
     cost = rp(best["EXPECTED_COST"])
     if is_keep(best):
         kept = f"the {best['MENGE']:,.0f} kg remainder on order" if remainder else "order"
         return (f"Recommend keeping {kept} {best['KEEP_EBELN']} with supplier {best['LIFNR']} "
                 f"and placing no new order, at an expected cost of {cost}.")
+    if also:
+        return (f"Recommend supplier {best['LIFNR']}, also the {' and '.join(also)} option, "
+                f"at an expected cost of {cost}.")
     return f"Recommend supplier {best['LIFNR']} at an expected cost of {cost}."
 
 

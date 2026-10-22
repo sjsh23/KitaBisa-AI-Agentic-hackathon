@@ -1,0 +1,4 @@
+description: Check whether GESIT is ready for the demo, the warm-up state and the open draft purchase orders. Use when the user asks if GESIT is ready. This never changes anything.
+target:
+  name: status_function
+  type: function

@@ -208,6 +208,7 @@ def check_explanation(text: str, facts: Any, max_words: int, lifnrs: Iterable[st
     words = len(text.split())
     has_dashes = any(d in text for d in DASHES)
     repeated = repeated_phrases(text)
+    also = ambiguous_also(text)
     return {
         "WORDS": words,
         "WITHIN_WORD_LIMIT": words < max_words,
@@ -217,9 +218,19 @@ def check_explanation(text: str, facts: Any, max_words: int, lifnrs: Iterable[st
         "MISSING_MENTIONS": missing,
         "HAS_DASHES": has_dashes,
         "REPEATED_PHRASES": repeated,
+        "AMBIGUOUS_ALSO": also,
         "PASSED": (words < max_words and not ungrounded and not negative and not glued
-                   and not missing and not has_dashes and not repeated),
+                   and not missing and not has_dashes and not repeated and not also),
     }
+
+
+# "It is also the fastest option." after a sentence about another supplier reads as if
+# that supplier were the fastest; OPENING says it about #1 instead.
+AMBIGUOUS_ALSO = re.compile(r"\bIt is also the (?:cheapest|fastest)\b[^.]*\.", re.IGNORECASE)
+
+
+def ambiguous_also(text: str) -> list[str]:
+    return [m.group(0) for m in AMBIGUOUS_ALSO.finditer(text)]
 
 
 def repeated_phrases(text: str) -> list[str]:

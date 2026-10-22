@@ -67,7 +67,8 @@ def test_scripted_chat(tmp_path, monkeypatch):
                                       "justification": justification}, 200,
                 "Override OVR-4500000431-001 logged: 100108 instead of the recommended 100109.",
                 f'Justification recorded: "{justification}".',
-                "Flagged for review: BUYER03 with 100107")
+                "BUYER01 with 100108 is not flagged.",
+                "Other flagged pairs: BUYER03 with 100107")
     assert first["SUPERSEDED"] == []
     first_draft = first["DRAFTS"][0]["EBELN"]
 
@@ -82,7 +83,7 @@ def test_scripted_chat(tmp_path, monkeypatch):
              "as the buyer\"")
     s3_draft = s3["DRAFTS"][0]["EBELN"]
     say("POST", f"/approvals/{s3_draft}/approve", {"as": "BUYER"}, 200,
-        f"PO {s3_draft} (supplier", "released by BUYER04 (the buyer's one-click, within policy)")
+        f"PO {s3_draft} (supplier", "is RELEASED, approved by the buyer BUYER04")
 
     s2 = say("POST", "/run", {"scenario": "S2"}, 200,
              "GESIT recommends keeping PO 4500000432 as it is", "Nothing was drafted",

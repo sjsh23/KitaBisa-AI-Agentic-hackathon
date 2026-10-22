@@ -8,3 +8,4 @@ decision_log.jsonl
 plan_log.jsonl
 po_store.json
 po_store.json.tmp
+.claude/settings.local.json

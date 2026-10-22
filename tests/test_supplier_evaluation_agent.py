@@ -164,7 +164,7 @@ def test_llm_facts_are_masked_and_precomputed(adapter):
     assert facts["RECOMMENDED"]["SUPPLIER"] == "supplier 100109"
     assert facts["RECOMMENDED"]["EXPECTED_COST"].startswith("expected cost Rp")
     # The first sentence is built in code (the model wrote "expected cost is expected cost").
-    assert facts["OPENING"] == ("Recommend supplier 100109 at an expected cost of "
+    assert facts["OPENING"] == ("Recommend supplier 100109, also the fastest option, at an expected cost of "
                                 + facts["RECOMMENDED"]["EXPECTED_COST"].removeprefix("expected cost ")
                                 + ".")
     assert not grounding.NEGATIVE_AMOUNT.search(text)
@@ -562,7 +562,7 @@ def test_amounts_are_written_as_in_the_tables(adapter):
     text = json.dumps(facts)
     assert "Rp " not in text and "Rp17,550 per kg" in text
     best = report["CASES"][0]["SCORING"]["CANDIDATES"][0]
-    assert facts["OPENING"] == f"Recommend supplier 100109 at an expected cost of Rp{best['EXPECTED_COST']:,}."
+    assert facts["OPENING"] == f"Recommend supplier 100109, also the fastest option, at an expected cost of Rp{best['EXPECTED_COST']:,}."
     sentence = facts["CHEAPEST"]["VS_RECOMMENDED"]["SENTENCE"]
     check = grounding.check_explanation(
         f"{facts['OPENING']} {sentence} {facts['TRACK_RECORD_WARNING']} Keeping it costs more. "

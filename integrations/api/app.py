@@ -22,25 +22,30 @@ in `release_po` decide as for anyone else.
 from __future__ import annotations
 
 import hmac
+import json
 import os
 import threading
+import time
 import uuid
 from collections import OrderedDict
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from adapters import PoStore, default_adapter
-from adapters.po_store import clear_po_store, po_store_path
+from adapters.po_store import OPEN_STATUSES, clear_po_store, po_store_path
 from agents import approvals, supervisor as sup
 from agents.integrity import is_override
 from policy import Principal
 from tools import get_integrity_flags, list_pending_approvals, reject_po
-from tools.integrity_tools import (MIN_JUSTIFICATION_CHARS, check_override, clear_decision_log,
-                                   read_overrides, recommended_label)
+from integrations.sap.rpt_client import prediction_cache_size
+from tools.integrity_tools import (JAKARTA, MIN_JUSTIFICATION_CHARS, check_override,
+                                   clear_decision_log, read_overrides, recommended_label)
 
 from integrations.api import responses as views
 from integrations.api import warmup
@@ -50,18 +55,24 @@ SCENARIOS = ("S1", "S2", "S3", "ALL", "SCAN")
 MAX_JOBS = 20   # finished /run/start jobs kept in memory, oldest dropped first
 BUYER_ALIAS = "BUYER"   # "as": "BUYER" = the draft's own buyer (ERNAM)
 LATEST_OVERRIDES = 5
+# B3: the comparison with simple rules, written by `python -m eval.monte_carlo ... --api-summary`.
+# The API only reads this file; it never imports eval/ and never reads _truth/ (D-1).
+EVALUATION_ENV = "GESIT_EVALUATION_SUMMARY"
+DEFAULT_EVALUATION = Path(__file__).resolve().parent / "evaluation_summary.json"
 
 
 class RunBody(BaseModel):
-    scenario: str = Field(description="S1, S2, S3, all (or scan)")
+    scenario: str | None = Field(default=None, description="S1, S2, S3, all (or scan)")
     llm: bool = True
 
-    @field_validator("scenario")
-    @classmethod
-    def known(cls, value: str) -> str:
-        if value.upper() not in SCENARIOS:
-            raise ValueError("scenario must be S1, S2, S3, all or scan")
-        return value.upper()
+
+def scenario_or_ask(body: RunBody) -> str:
+    """B1: a missing or unknown scenario is a question back to the user (422), never a guess."""
+    value = (body.scenario or "").strip().upper()
+    if value not in SCENARIOS:
+        raise _summary_error(422, views.WHICH_SCENARIO,
+                             views.say(views.run_phrase("S1"), views.RUN_ALL_PHRASE))
+    return value
 
 
 class ActorBody(BaseModel):
@@ -118,6 +129,8 @@ def create_app(load_env: bool = True, warm_up: bool | None = None) -> FastAPI:
                              for e in exc.errors())
         return JSONResponse({"SUMMARY": f"Invalid request: {problems}."}, status_code=422)
 
+    started_at = datetime.now(JAKARTA).isoformat(timespec="seconds")
+    started = time.perf_counter()
     lock = threading.Lock()
     jobs: OrderedDict[str, dict[str, Any]] = OrderedDict()
     adapter = default_adapter()
@@ -159,29 +172,54 @@ def create_app(load_env: bool = True, warm_up: bool | None = None) -> FastAPI:
         return {**warm_state, "SUMMARY": f"Warm-up {warm_state['STATUS']}"
                 + (f": {steps}." if steps else ".")}
 
+    @app.get("/status", dependencies=[Depends(require_key)])
+    def status() -> dict[str, Any]:
+        """B2: readiness before the demo: warm-up, SAP-RPT cache, open drafts, start time."""
+        open_drafts = sum(po["STATUS"] in OPEN_STATUSES for po in store().all())
+        return {"DATA_NOTE": views.DATA_NOTE,
+                **views.with_next(views.status_summary(warm_state, open_drafts),
+                                  views.say(views.RESET_PHRASE, views.run_phrase("S1"))),
+                "WARMUP": warm_state, "RPT_CACHE_SIZE": prediction_cache_size(),
+                "OPEN_DRAFTS": open_drafts, "STARTED_AT": started_at,
+                "UPTIME_SECONDS": round(time.perf_counter() - started, 1)}
+
+    @app.get("/evaluation", dependencies=[Depends(require_key)])
+    def evaluation() -> dict[str, Any]:
+        """B3: GESIT against simple rules, from the eval/ summary file (simulated)."""
+        path = Path(os.environ.get(EVALUATION_ENV) or DEFAULT_EVALUATION)
+        if not path.exists():
+            raise _summary_error(404, "No evaluation summary on this server yet.",
+                                 views.say(views.run_phrase("S1")))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return {"DATA_NOTE": views.DATA_NOTE,
+                **views.with_next(views.evaluation_summary(data),
+                                  views.say(views.run_phrase("S1"), views.STATUS_PHRASE)),
+                "TABLE_MD": views.evaluation_md(data), "EVALUATION": data}
+
     # -------------------------------------------------------------------- run
     @app.post("/run", dependencies=[Depends(require_key)])
     def run(body: RunBody) -> dict[str, Any]:
-        return views.run_response(run_supervisor(body.scenario, body.llm))
+        return views.run_response(run_supervisor(scenario_or_ask(body), body.llm))
 
     @app.post("/run/start", dependencies=[Depends(require_key)])
     def run_start(body: RunBody) -> dict[str, Any]:
+        scenario = scenario_or_ask(body)
         job_id = uuid.uuid4().hex[:12]
-        jobs[job_id] = {"status": "running", "SCENARIO": body.scenario}
+        jobs[job_id] = {"status": "running", "SCENARIO": scenario}
         while len(jobs) > MAX_JOBS:
             jobs.popitem(last=False)
 
         def work() -> None:
             try:
                 jobs[job_id] = {"status": "done",
-                                **views.run_response(run_supervisor(body.scenario, body.llm))}
+                                **views.run_response(run_supervisor(scenario, body.llm))}
             except Exception as exc:   # reported to the caller, never raised in the thread
                 jobs[job_id] = {"status": "failed", "SUMMARY": f"The run failed: "
                                 f"{type(exc).__name__}: {exc}"}
 
         threading.Thread(target=work, name=f"gesit-run-{job_id}", daemon=True).start()
         return {"job_id": job_id, "status": "running",
-                "SUMMARY": f"Run {body.scenario} started. Ask GET /run/{job_id} for the result."}
+                "SUMMARY": f"Run {scenario} started. Ask GET /run/{job_id} for the result."}
 
     @app.get("/run/{job_id}", dependencies=[Depends(require_key)])
     def run_result(job_id: str) -> dict[str, Any]:

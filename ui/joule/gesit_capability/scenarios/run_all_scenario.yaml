@@ -1,0 +1,4 @@
+description: Run GESIT on all scenarios at once, S1, S2 and S3 together. Use only when the user says all scenarios.
+target:
+  name: run_all_function
+  type: function
