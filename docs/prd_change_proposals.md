@@ -460,6 +460,31 @@ below its MINBM is not a candidate." FR-SEL-2: "An order part below the supplier
 raised to MINBM; the extra kilograms are purchase cost, with no credit for the extra stock."
 Section 8 `get_quotes`: quotes_asof rows incl. MINBM.
 
+## 13. HTTP API on Cloud Foundry as the bridge for Joule (section 5, section 13, section 17)
+
+**Status:** built, waiting for team agreement (22 Oct 2026). `integrations/api/`, `manifest.yml`,
+`runtime.txt`, `.cfignore`.
+
+**Why.** The Joule capability (built in `ui/joule/`) needs an HTTP endpoint to call; AgentCore
+Runtime, Gateway and Policy are not set up yet. PRD section 17 still has "how Joule calls the
+supervisor" open.
+
+**What was built.** A FastAPI app (`uvicorn --factory integrations.api.app:create_app`) over the
+existing code, nothing copied: `/health`, `/run` and `/run/start` + `/run/{job_id}` (supervisor),
+`/approvals`, `/approvals/{ebeln}/approve`, `/approvals/{ebeln}/reject` (`release_po`,
+`reject_po`, POL-1, POL-4), `/override` (Integrity Guard through the supervisor), `/reset`
+(the existing clear functions). Header `X-API-Key` = GESIT_API_KEY on every endpoint but
+`/health`; the app does not start without it. Policy deny 403, wrong state 409, short reason
+or justification 422. Every response has SUMMARY (2 to 4 sentences, every amount marked
+simulated) and stays under 20 KB. Folder: `integrations/api/`, because PRD section 13 has no
+`api/` and CLAUDE.md asks before a new top-level folder. Proposed section 13 line if the team
+prefers: `api/  HTTP API for Joule (FastAPI), deployed on Cloud Foundry`.
+
+**Limits.** The PO store, plan log and decision log are files on the app's local disk: a
+restart or restage empties them (fine for the demo, `/reset` does the same). One instance only.
+The approver comes from the request body (`"as"`); in the deployed version it should come from
+the Joule login (item 11).
+
 ## PRD Changelog draft
 
 Lines to add to the Changelog at the end of `PRD.md` once the team agrees:
@@ -470,3 +495,4 @@ Lines to add to the Changelog at the end of `PRD.md` once the team agrees:
 - 2026-10-15: FR-SEL-1: suppliers with a flagged PO in the same run are excluded by default (switch EXCLUDE_FLAGGED_SUPPLIERS, reason listed per supplier); suppliers with zero spare capacity are excluded. Open: keep 100103 in S2, since a price revision does not delay delivery.
 - 2026-10-15: FR-SEL-2: split orders made explicit ("cannot cover full quantity", kilograms add up to Q, never ranked above spare capacity); in a run with several flagged POs, the recommended order reserves spare capacity for later cases. The S1 versus `all` difference for 100109 (12,500 kg spare) was this reservation, now shown in the output.
 - 2026-10-22: Section 6, FR-SEL-1, FR-SEL-2, section 8: minimum order quantity (quotes_asof.MINBM, simulated: 1,000 kg, 5,000 kg for 100102); an order part below MINBM is raised to MINBM and the extra kg counts as purchase cost; a supplier with spare capacity below MINBM is skipped (item 12).
+- 2026-10-22: Sections 5, 13, 17: HTTP API (`integrations/api`, FastAPI on Cloud Foundry) as the bridge between Joule and the supervisor, approvals and Integrity Guard, until AgentCore is set up (item 13).

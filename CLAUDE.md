@@ -62,6 +62,9 @@ python -m agents.supervisor S1 [--no-llm] [--choose LIFNR --justification "..."]
 python -m agents.approvals list
 python -m agents.approvals approve <EBELN> --as MANAGER01
 python -m agents.approvals reject <EBELN> --as MANAGER01 --reason "text of 20+ characters"
+# HTTP API for Joule (integrations/api); needs GESIT_API_KEY; Cloud Foundry files: manifest.yml,
+# runtime.txt, .cfignore (deployed by the team, never by Claude)
+uvicorn --factory integrations.api.app:create_app --port 8000
 # Monte Carlo against baselines (FR-EVA-4): GESIT, always-cheapest, always-fastest, keep the PO,
 # outcomes from data_gen/world.py (eval/ only, D-1); --json PATH writes the numbers
 python -m eval.monte_carlo --scenario all --runs 1000 --seed 42

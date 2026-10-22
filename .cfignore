@@ -1,0 +1,23 @@
+# Left out of `cf push` (the app needs adapters/ agents/ integrations/ policy/ scoring/ tools/,
+# data_gen/out/ without _truth/, requirements.txt, runtime.txt).
+.git/
+.gitignore
+.claude/
+.env
+.venv/
+.pytest_cache/
+__pycache__/
+*.pyc
+tests/
+test_out/
+conftest.py
+data_gen/out/_truth/
+data_gen/data/
+data_gen/*.py
+eval/
+docs/
+*.jsonl
+po_store.json
+po_store.json.tmp
+output*.txt
+*.md

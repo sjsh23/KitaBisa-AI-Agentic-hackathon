@@ -68,7 +68,7 @@ git diff --cached --name-only
 py -3.11 -m pytest -q
 ```
 
-Expected: `313 passed` (22 October 2026). The tests never call the network: SAP-RPT, SAP AI Core and the reasoning models are replaced by fakes.
+Expected: `341 passed` (22 October 2026). The tests never call the network: SAP-RPT, SAP AI Core and the reasoning models are replaced by fakes.
 
 | Test file | What it proves | Requirements |
 |---|---|---|
@@ -85,6 +85,7 @@ Expected: `313 passed` (22 October 2026). The tests never call the network: SAP-
 | `tests/test_monte_carlo.py` | The four strategies match the real recommendation (SAP-RPT replayed from a recorded run); SAP-RPT called once per case and never in the loop, no LLM call; same seed same result, other seed differs; an on-time world costs only the purchase; common random numbers; quantity-weighted stock-out for a split; a case without a fastest row stops; footer text; nothing outside `eval/` uses `data_gen/world.py`, `_truth/` or `eval` | FR-EVA-4, D-1, D-3 |
 | `tests/test_monte_carlo_robustness.py` | Default output unchanged against a frozen copy (`tests/monte_carlo_default_before.txt`) except the renamed headers and footer; two generated worlds: SAP-RPT once per world, case and mode, temporary folders deleted, `data_gen/out` hashes unchanged, a fallback world excluded from the cross-world summary; JSON has `simulated` and the cross-world summary; downtime sweep at Rp150,000,000 equals the main results (decisions fixed and re-made), a higher value raises only strategies with stock-out days; `--baseline-table rpt` gives the old numbers, `same` differs only where the LEARNING table differs; summary table; nothing outside `eval/` imports `eval` | FR-EVA-4, D-1, D-3 |
 | `tests/test_moq.py` | MINBM in the quotes (1,000 kg, 5,000 kg for 100102, simulated); an order part below MINBM raised to MINBM with the extra kg in the purchase cost and a "MOQ +300 kg" mark, risk cost unchanged; spare below MINBM excluded as a full order (BELOW_MOQ) and skipped as a split partner; MINBM equal to the need and a quote without MINBM change nothing; keep row unchanged; reservations and drafts use the ordered kg (NETWR incl. the round-up); the explanation facts name the round-up and pass the check | FR-SEL-1, FR-SEL-2, FR-ACT-1, POL-1, D-3 |
+| `tests/test_api.py` | The HTTP API with FastAPI's TestClient: no start without GESIT_API_KEY, /health without a key, 401 on every other endpoint without or with a wrong key; /run for S1, S2, S3, all and scan (plan steps with STATUS and SECONDS, top 3 rows plus the keep row, MOQ mark, drafts with NEXT, SUMMARY of 2 to 4 sentences with every amount marked simulated); /run/start then /run/{job_id}; /approvals; 403 on a policy deny (POL-1, POL-4); 409 on a double approve and a reject after release; 422 on a short reason and a short justification; /override logs, drafts and returns the integrity flags; /reset then /approvals empty; every response under 20 KB | FR-SUP-1 to FR-SUP-3, FR-ACT-2, FR-INT-1, POL-1, POL-4, D-3, NFR-4 |
 | `tests/test_supervisor.py` | Plan steps for S1, S2, S3, all and scan (Integrity Guard before Action with `--choose`); the graph is a Strands Graph of Python nodes with fixed edges; each stop rule (nothing flagged, keep everywhere, no candidate for one case and for every case, policy deny hands back to the manager, short justification); a failed step is marked FAILED; the supervisor never calls `release_po`; the plan log line is JSON with every step, STATUS and SECONDS; the CLI prints the `agents.run` report after the plan | FR-SUP-1 to FR-SUP-3, FR-ACT-2, POL-4 |
 | `tests/test_approvals.py` | PO store saved and loaded by a second store object, numbers continue from the file, memory mode writes nothing, clear; S1 across two processes approved and rejected; next option from the saved table (rank 2, rank 1 after a rejected override, keep when it ranked higher); reject as its own decision log entry, overrides unchanged; agent denied approve and reject (POL-4), buyer denied reject (POL-1), reason under 20 characters refused; every double action changes nothing; CLI list, reject, approve | FR-ACT-2, FR-ACT-3, POL-1, POL-4, FR-INT-1 |
 
@@ -280,6 +281,43 @@ py -3.11 -m agents.approvals approve 4500000436 --as MANAGER01
 | `approvals reject` | REJECTED, old PO 4500000431 untouched, "Next option for the buyer" (rank 2), decision log REJ-4500000435-001 |
 | `approvals approve 4500000436` | RELEASED by MANAGER01, the old PO cancel line |
 | approve or reject a second time | "Error: PO ... is RELEASED/REJECTED ...; nothing changed.", exit code 1 |
+
+### HTTP API for Joule (integrations/api)
+
+The API wraps the supervisor, the approvals and the Integrity Guard; it keeps its state in the
+same PO store, plan log and decision log as the CLIs. Every endpoint except `/health` needs the
+header `X-API-Key` with the value of GESIT_API_KEY; without that variable the app does not start.
+
+```powershell
+$env:GESIT_API_KEY = "local-key"      # any value locally; never commit it
+py -3.11 -m uvicorn --factory integrations.api.app:create_app --port 8000
+```
+
+In a second terminal (Git Bash; in PowerShell use `curl.exe` and escape the quotes):
+
+```bash
+curl http://127.0.0.1:8000/health
+curl -X POST http://127.0.0.1:8000/run -H "X-API-Key: local-key" -H "Content-Type: application/json" -d '{"scenario": "S1", "llm": false}'
+curl -X POST http://127.0.0.1:8000/run/start -H "X-API-Key: local-key" -H "Content-Type: application/json" -d '{"scenario": "S1"}'
+curl http://127.0.0.1:8000/run/<job_id> -H "X-API-Key: local-key"
+curl http://127.0.0.1:8000/approvals -H "X-API-Key: local-key"
+curl -X POST http://127.0.0.1:8000/approvals/4500000435/reject -H "X-API-Key: local-key" -H "Content-Type: application/json" -d '{"as": "MANAGER01", "reason": "Price too high for this quarter, ask buyer for option 2"}'
+curl -X POST http://127.0.0.1:8000/approvals/4500000436/approve -H "X-API-Key: local-key" -H "Content-Type: application/json" -d '{"as": "MANAGER01"}'
+curl -X POST http://127.0.0.1:8000/override -H "X-API-Key: local-key" -H "Content-Type: application/json" -d '{"scenario": "S1", "choose": "100108", "justification": "100109 has only 4 receipts, we prefer a long track record"}'
+curl -X POST http://127.0.0.1:8000/reset -H "X-API-Key: local-key"
+```
+
+| Call | Expected (simulated) |
+|---|---|
+| no or wrong `X-API-Key` | 401, SUMMARY "Missing or wrong X-API-Key header." |
+| `POST /run` S1, llm false | 200: PLAN (3 steps DONE with SECONDS), CASES[0] TABLE (top 3 plus keep), DRAFTS[0] NEXT "manager approval", SUMMARY of 3 sentences |
+| approve as `{"as": "BUYER01", "role": "buyer"}` | 403 with POLICY_DECISION POL-1 |
+| approve twice | 409 |
+| reject with a reason under 20 characters | 422 |
+| `POST /override` with a short justification | 422 with REASON |
+
+`POST /run` with `"llm": true` (real SAP-RPT-1.6 and GPT-5.4) took 19.4 s locally on 22 Oct
+2026: Detection 12.9 s, Supplier Evaluation 6.4 s, Action 0.0 s.
 
 ### Monte Carlo against baselines (FR-EVA-4)
 

@@ -1,0 +1,22 @@
+# Cloud Foundry manifest for the GESIT HTTP API (integrations/api), used by the Joule capability.
+# No secret here: GESIT_API_KEY and the SAP AI Core variables are set with `cf set-env` (NFR-4).
+# Memory: about 171 MB resident measured locally (app loaded, one S1 run without model texts,
+# 22 Oct 2026); 512M leaves room in the 1 GB space quota next to the 128M test app.
+# The PO store, plan log and decision log are on the app's local disk: a restart or restage
+# empties them (as POST /reset does).
+applications:
+- name: gesit-api
+  memory: 512M
+  disk_quota: 1G
+  instances: 1
+  buildpacks:
+  - python_buildpack
+  command: uvicorn --factory integrations.api.app:create_app --host 0.0.0.0 --port $PORT
+  health-check-type: http
+  health-check-http-endpoint: /health
+  timeout: 180
+  env:
+    PYTHONUNBUFFERED: "1"
+    # one BLAS thread: scipy's OpenBLAS otherwise reserves buffers per CPU core
+    OPENBLAS_NUM_THREADS: "1"
+    OMP_NUM_THREADS: "1"

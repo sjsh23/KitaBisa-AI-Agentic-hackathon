@@ -59,12 +59,23 @@ def format_pending(listing: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def approve(store: PoStore, ebeln: str, principal: Principal) -> tuple[int, list[str]]:
+def approve_po(store: PoStore, ebeln: str, principal: Principal) -> dict[str, Any]:
+    """The manager's approve: `release_po` on a PENDING_APPROVAL PO (used by this CLI and the
+    HTTP API). ValueError when the PO is in another status (nothing changed); KeyError when
+    GESIT did not create it. Returns the release_po result plus the PO as it was."""
     po = store.get(ebeln)
     if po["STATUS"] != STATUS_PENDING:
-        return 1, [f"Error: PO {ebeln} is {po['STATUS']}, only a {STATUS_PENDING} PO can be "
-                   "approved; nothing changed."]
-    result = release_po(ebeln, store=store, principal=principal)
+        raise ValueError(f"PO {ebeln} is {po['STATUS']}, only a {STATUS_PENDING} PO can be "
+                         "approved; nothing changed.")
+    return {**release_po(ebeln, store=store, principal=principal), "PO": po}
+
+
+def approve(store: PoStore, ebeln: str, principal: Principal) -> tuple[int, list[str]]:
+    try:
+        result = approve_po(store, ebeln, principal)
+    except ValueError as exc:
+        return 1, [f"Error: {exc}"]
+    po = result["PO"]
     decision = result["POLICY_DECISION"]
     if result["RESULT"] != "RELEASED":
         return 1, [f"Approve by {principal.id} denied by {decision['POLICY']}: "
