@@ -92,13 +92,23 @@ def short_marks(row: dict[str, Any]) -> str:
     return ", ".join(out) or "-"
 
 
-def table_md(case: dict[str, Any]) -> str:
-    """The rows of `table_view` (top 3 plus the keep row) as a small Markdown table."""
+def md_rows(case: dict[str, Any]) -> list[dict[str, Any]]:
+    """Rows for TABLE_MD, in rank order: the top 3, plus the keep row and the cheapest and
+    fastest new orders when they ranked lower, so every supplier SUMMARY names is shown."""
     rows = case["SCORING"]["CANDIDATES"]
-    shown = rows[:TOP_ROWS]
-    keep = next((r for r in rows if r["OPTION"] == supplier_score.OPTION_KEEP), None)
-    if keep is not None and keep not in shown:
-        shown = shown + [keep]
+    shown = list(rows[:TOP_ROWS])
+    extra = [next((r for r in rows if r["OPTION"] == supplier_score.OPTION_KEEP), None),
+             next((r for r in rows if r.get("IS_CHEAPEST")), None),
+             next((r for r in rows if r.get("IS_FASTEST")), None)]
+    for row in extra:
+        if row is not None and all(row is not s for s in shown):
+            shown.append(row)
+    return sorted(shown, key=lambda r: r["RANK"])
+
+
+def table_md(case: dict[str, Any]) -> str:
+    """`md_rows` (top 3, keep, cheapest, fastest) as a small Markdown table."""
+    shown = md_rows(case)
     lines = ["| " + " | ".join(MD_COLUMNS) + " |", "|" + "---|" * len(MD_COLUMNS)]
     for r in shown:
         supplier = (f"keep PO {r['KEEP_EBELN']} ({r['LIFNR']})"

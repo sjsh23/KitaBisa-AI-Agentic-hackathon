@@ -294,7 +294,9 @@ def test_table_md_for_s1(client):
                         "Marks |")
     assert lines[1] == "|---|---|---|---|---|---|"
     rows = [l for l in lines[2:] if l.startswith("| ")]
-    assert len(rows) == 4 and rows[0].startswith("| 1 | 100109 | ")
+    # top 3, the lowest-price supplier 100105 (rank 5, named in SUMMARY) and the keep row
+    assert len(rows) == 5 and rows[0].startswith("| 1 | 100109 | ")
+    assert [int(r.split("|")[1]) for r in rows] == sorted(int(r.split("|")[1]) for r in rows)
     assert "keep PO 4500000431 (100101)" in rows[-1]
     assert lines[-1] == "All numbers simulated."
     first = data["CASES"][0]["TABLE"][0]
@@ -330,3 +332,25 @@ def test_override_has_table_md(client):
                 {"scenario": "S1", "choose": "100108", "justification": JUSTIFICATION})
     assert data["TABLE_MD"].startswith("### PO 4500000431")
     assert "TABLE_MD" in data["CASES"][0]
+
+
+def test_every_supplier_named_in_summary_is_in_table_md(client):
+    for scenario in ("S1", "S2", "S3", "all"):
+        data = call(client, "POST", "/run", {"scenario": scenario, "llm": False})
+        for case in data["CASES"]:
+            md_suppliers = {line.split("|")[2].strip()
+                            for line in case["TABLE_MD"].splitlines()[2:] if line.startswith("| ")}
+            for named in (case["CHEAPEST"], case["FASTEST"]):
+                if named:
+                    assert named in md_suppliers, (scenario, case["EBELN"], named)
+        named_in_summary = set(re.findall(r"supplier, (\d{6}),", data["SUMMARY"]))
+        md_all = data["TABLE_MD"]
+        assert all(f"| {lifnr} |" in md_all for lifnr in named_in_summary), scenario
+
+
+def test_md_rows_adds_cheapest_and_fastest_with_their_real_rank():
+    rows = [{"RANK": i, "OPTION": "NEW_PO", "LIFNR": f"10010{i}", "IS_CHEAPEST": i == 6,
+             "IS_FASTEST": i == 5} for i in range(1, 8)]
+    rows[3]["OPTION"] = "KEEP_CURRENT_PO"   # rank 4
+    shown = views.md_rows({"SCORING": {"CANDIDATES": rows}})
+    assert [r["RANK"] for r in shown] == [1, 2, 3, 4, 5, 6]
