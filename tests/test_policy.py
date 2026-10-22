@@ -37,3 +37,14 @@ def test_pol4_agents_never_approve():
 
 def test_decision_as_dict():
     assert authorize("release_po", AGENT, ON_PANEL).as_dict()["POLICY"] == "POL-4"
+
+
+def test_reject_po_only_by_a_manager():   # proposal item 11: POL-4 for agents, POL-1 for buyers
+    assert authorize("reject_po", manager("MGR07"), ABOVE).allowed
+    assert authorize("reject_po", AGENT, ABOVE).policy == "POL-4"
+    denied = authorize("reject_po", buyer("BUYER01"), ABOVE)
+    assert (denied.allowed, denied.policy) == (False, "POL-1")
+
+
+def test_list_pending_approvals_is_a_permitted_tool():
+    assert authorize("list_pending_approvals", AGENT).allowed

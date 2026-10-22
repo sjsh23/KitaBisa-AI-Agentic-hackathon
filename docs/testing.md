@@ -68,7 +68,7 @@ git diff --cached --name-only
 py -3.11 -m pytest -q
 ```
 
-Expected: `250 passed` (21 October 2026). The tests never call the network: SAP-RPT, SAP AI Core and the reasoning models are replaced by fakes.
+Expected: `297 passed` (22 October 2026). The tests never call the network: SAP-RPT, SAP AI Core and the reasoning models are replaced by fakes.
 
 | Test file | What it proves | Requirements |
 |---|---|---|
@@ -84,6 +84,8 @@ Expected: `250 passed` (21 October 2026). The tests never call the network: SAP-
 | `tests/test_integrity.py` | Only BUYER03 with 100107 flagged on the simulated EKKO (40 pairs tested); k = 4, ratio 1.9 and p >= 0.01 not flagged; share_others = 0 does not crash; binomial tail equals scipy; justification 19 characters rejected, 20 accepted, 25 spaces rejected; same choice writes nothing; one log line with every field; cost difference chosen minus recommended; overriding a keep recommendation; the Action agent drafts a choice only with an override id; neutral wording; the three CLI paths. Uses a temp DECISION_LOG_PATH | FR-INT-1 to FR-INT-4, D-3 |
 | `tests/test_monte_carlo.py` | The four strategies match the real recommendation (SAP-RPT replayed from a recorded run); SAP-RPT called once per case and never in the loop, no LLM call; same seed same result, other seed differs; an on-time world costs only the purchase; common random numbers; quantity-weighted stock-out for a split; a case without a fastest row stops; footer text; nothing outside `eval/` uses `data_gen/world.py`, `_truth/` or `eval` | FR-EVA-4, D-1, D-3 |
 | `tests/test_monte_carlo_robustness.py` | Default output unchanged against a frozen copy (`tests/monte_carlo_default_before.txt`) except the renamed headers and footer; two generated worlds: SAP-RPT once per world, case and mode, temporary folders deleted, `data_gen/out` hashes unchanged, a fallback world excluded from the cross-world summary; JSON has `simulated` and the cross-world summary; downtime sweep at Rp150,000,000 equals the main results (decisions fixed and re-made), a higher value raises only strategies with stock-out days; `--baseline-table rpt` gives the old numbers, `same` differs only where the LEARNING table differs; summary table; nothing outside `eval/` imports `eval` | FR-EVA-4, D-1, D-3 |
+| `tests/test_supervisor.py` | Plan steps for S1, S2, S3, all and scan (Integrity Guard before Action with `--choose`); the graph is a Strands Graph of Python nodes with fixed edges; each stop rule (nothing flagged, keep everywhere, no candidate for one case and for every case, policy deny hands back to the manager, short justification); a failed step is marked FAILED; the supervisor never calls `release_po`; the plan log line is JSON with every step, STATUS and SECONDS; the CLI prints the `agents.run` report after the plan | FR-SUP-1 to FR-SUP-3, FR-ACT-2, POL-4 |
+| `tests/test_approvals.py` | PO store saved and loaded by a second store object, numbers continue from the file, memory mode writes nothing, clear; S1 across two processes approved and rejected; next option from the saved table (rank 2, rank 1 after a rejected override, keep when it ranked higher); reject as its own decision log entry, overrides unchanged; agent denied approve and reject (POL-4), buyer denied reject (POL-1), reason under 20 characters refused; every double action changes nothing; CLI list, reject, approve | FR-ACT-2, FR-ACT-3, POL-1, POL-4, FR-INT-1 |
 
 To run one file or one test:
 
@@ -248,6 +250,32 @@ Every path that gets past the rule ends with the flags table: one row, BUYER03 w
 ... flagged: 1", and the sentence "This is a statistic, not a finding." Use `--choose keep`
 to keep the current PO instead of the #1 new order (also an override). A supplier that is
 not in the ranked table (for example 100111, off the panel) is rejected.
+
+### Supervisor and manager approval (FR-SUP-1 to FR-SUP-3, FR-ACT-2)
+
+The supervisor prints its plan, then the same report as `agents.run`, then the outcome
+(status and seconds per step, the stop rule, who decides next per case). Drafts are saved in
+the PO store (PO_STORE_PATH, default `po_store.json` next to the decision log) and the plan
+in the plan log (PLAN_LOG_PATH, default `plan_log.jsonl`); delete both, and
+`decision_log.jsonl`, to start clean.
+
+```powershell
+py -3.11 -m agents.supervisor S1 --no-llm
+py -3.11 -m agents.approvals list
+py -3.11 -m agents.approvals reject 4500000435 --as MANAGER01 --reason "Price too high for this quarter, ask buyer for option 2"
+py -3.11 -m agents.supervisor S1 --no-llm
+py -3.11 -m agents.approvals approve 4500000436 --as MANAGER01
+```
+
+| Command | Expected (offline, simulated) |
+|---|---|
+| `supervisor S1` | plan with 3 steps; draft 4500000435 for 100109 at Rp175,500,000, POL-1 denies the buyer, submitted as APR-4500000435; "Stop (HANDED_BACK, after Action): handed back to the manager" |
+| `supervisor S2` | Action NOT_RUN, "Stop (KEEP_EVERYWHERE, ...)" with the old PO line for 4500000432 |
+| `supervisor scan` | Supplier Evaluation and Action NOT_RUN, "Detection flagged nothing: no action needed." |
+| `approvals list` | one row, APR-4500000435 |
+| `approvals reject` | REJECTED, old PO 4500000431 untouched, "Next option for the buyer" (rank 2), decision log REJ-4500000435-001 |
+| `approvals approve 4500000436` | RELEASED by MANAGER01, the old PO cancel line |
+| approve or reject a second time | "Error: PO ... is RELEASED/REJECTED ...; nothing changed.", exit code 1 |
 
 ### Monte Carlo against baselines (FR-EVA-4)
 
@@ -500,7 +528,7 @@ After steps 5 to 7, update `WORKING.md` (status of section 7.2, done log) with:
 
 ## Not covered yet
 
-The supervisor, Cedar policies on AgentCore and the Joule UI do
+Cedar policies on AgentCore and the Joule UI do
 not exist yet, so there is nothing to test for them. The Action agent's policies
 POL-1 to POL-4 run as local Python (`policy/local_policy.py`, tests in
 `tests/test_policy.py`) until AgentCore Policy is set up. The Supplier Evaluation

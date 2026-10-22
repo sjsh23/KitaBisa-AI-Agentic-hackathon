@@ -51,6 +51,50 @@ def format_override(record: dict[str, Any]) -> list[str]:
         for key, value in record.items()]
 
 
+def is_override(choose: str | None, case: dict[str, Any]) -> bool:
+    """True when --choose names an option other than #1 (FR-INT-1); None means #1."""
+    chosen, recommended = chosen_label(choose, case), recommended_label(case)
+    return chosen is not None and recommended is not None and \
+        chosen.lower() != recommended.lower()
+
+
+def buyer_choice(case: dict[str, Any], choose: str | None, justification: str,
+                 buyer_id: str) -> dict[str, Any]:
+    """FR-INT-1, FR-INT-2: check the buyer's choice and log an override; the printed lines too.
+
+    Returns ALLOWED (draft may go ahead), CHOSEN (option label), OVERRIDE_ID (None when
+    nothing was logged) and LINES. Nothing is drafted here; the caller passes CHOSEN and
+    OVERRIDE_ID to the Action agent. Used by this CLI and by agents.supervisor.
+    """
+    recommended = recommended_label(case)
+    chosen = chosen_label(choose, case) or recommended
+    best = find_option(case, recommended)
+    picked = find_option(case, chosen)
+    lines = ["Buyer's choice:",
+             f"  Recommended: {recommended}, expected cost Rp{best['EXPECTED_COST']:,} (simulated)"]
+    out = {"ALLOWED": False, "CHOSEN": chosen, "OVERRIDE_ID": None, "LINES": lines}
+    if picked is None:
+        options = ", ".join(option_label(r) for r in case["SCORING"]["CANDIDATES"])
+        lines.append(f"  Rejected: {chosen} is not one of the ranked options ({options}). "
+                     "No draft PO was created.")
+        return out
+    lines.append(f"  Chosen: {option_label(picked)}, expected cost Rp{picked['EXPECTED_COST']:,} "
+                 "(simulated)")
+    check = check_override(recommended, chosen, justification)
+    lines.append(f"  {check['MESSAGE']}")
+    if not check["ALLOWED"]:
+        return out
+
+    if check["OVERRIDE"]:
+        out["OVERRIDE_ID"] = record_override(case["EBELN"], recommended, chosen, justification,
+                                             case=case, buyer=buyer_id)
+        record = next(o for o in read_overrides() if o["OVERRIDE_ID"] == out["OVERRIDE_ID"])
+        lines += [""] + format_override(record)
+    else:
+        lines.append("  No override, nothing logged.")
+    return {**out, "ALLOWED": True}
+
+
 def format_flags(flags: dict[str, Any]) -> str:
     """The manager view of FR-INT-3 and FR-INT-4 as plain text, numbers from the tool."""
     lines = [f"GESIT Integrity flags ({flags['DATA_NOTE']})",
@@ -126,35 +170,15 @@ def main(argv: list[str] | None = None) -> int:
         print("No ranked option, nothing to choose; handed back to the buyer.")
         return 0
 
-    chosen = chosen_label(args.choose, case) or recommended
-    best = find_option(case, recommended)
-    picked = find_option(case, chosen)
-    print("Buyer's choice:")
-    print(f"  Recommended: {recommended}, expected cost Rp{best['EXPECTED_COST']:,} (simulated)")
-    if picked is None:
-        options = ", ".join(option_label(r) for r in case["SCORING"]["CANDIDATES"])
-        print(f"  Rejected: {chosen} is not one of the ranked options ({options}). "
-              "No draft PO was created.")
+    choice = buyer_choice(case, args.choose, args.justification, buyer_id)
+    print("\n".join(choice["LINES"]))
+    if not choice["ALLOWED"]:
         return 1
-    print(f"  Chosen: {option_label(picked)}, expected cost Rp{picked['EXPECTED_COST']:,} "
-          "(simulated)")
-    check = check_override(recommended, chosen, args.justification)
-    print(f"  {check['MESSAGE']}")
-    if not check["ALLOWED"]:
-        return 1
-
-    override_id = None
-    if check["OVERRIDE"]:
-        override_id = record_override(case["EBELN"], recommended, chosen, args.justification,
-                                      case=case, buyer=buyer_id)
-        record = next(o for o in read_overrides() if o["OVERRIDE_ID"] == override_id)
-        print("\n" + "\n".join(format_override(record)))
-    else:
-        print("  No override, nothing logged.")
 
     actions = ActionAgent(adapter=adapter).act(
         {**evaluation, "CASES": [case]},
-        choices={case["EBELN"]: {"CHOSEN": chosen, "OVERRIDE_ID": override_id}},
+        choices={case["EBELN"]: {"CHOSEN": choice["CHOSEN"],
+                                 "OVERRIDE_ID": choice["OVERRIDE_ID"]}},
         buyer_id=buyer_id)
     print("\n" + format_action(actions))
     print("\n" + format_flags(get_integrity_flags(adapter=adapter)))

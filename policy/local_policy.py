@@ -8,12 +8,16 @@ against both.
 Rules, checked in this order, deny wins (Cedar is deny-by-default):
 
 - POL-3: a tool that is not in the section 8 list is denied.
-- POL-4: an agent principal never calls an approval tool (`release_po`); only a
-  human (buyer or manager) releases a PO.
+- POL-4: an agent principal never calls an approval tool (`release_po`,
+  `reject_po`); only a human (buyer or manager) releases a PO.
 - POL-2: `draft_po` and `release_po` are denied for a supplier that is not on the
   approved panel (LFA1.ZZPANEL is not `X`).
 - POL-1: `release_po` is denied when NETWR is above the threshold, unless the
-  principal has role manager.
+  principal has role manager. `reject_po` (the manager's no to an approval
+  request that POL-1 routed) is denied to every role but manager.
+
+`list_pending_approvals` and `reject_po` are not in PRD section 8 yet: built,
+waiting for team agreement (docs/prd_change_proposals.md item 11).
 """
 from __future__ import annotations
 
@@ -33,8 +37,9 @@ PERMITTED_TOOLS = frozenset({
     "get_market_price", "predict_delay_risk", "score_suppliers", "draft_po",
     "submit_for_approval", "release_po", "record_override", "record_outcome",
     "get_integrity_flags",
+    "list_pending_approvals", "reject_po",   # proposal item 11, waiting for team agreement
 })
-APPROVAL_TOOLS = frozenset({"release_po"})          # POL-4: humans only
+APPROVAL_TOOLS = frozenset({"release_po", "reject_po"})   # POL-4: humans only
 PANEL_TOOLS = frozenset({"draft_po", "release_po"})  # POL-2
 
 
@@ -76,6 +81,9 @@ def authorize(tool: str, principal: Principal,
     if tool in APPROVAL_TOOLS and principal.role == ROLE_AGENT:
         return Decision(False, "POL-4", f"agent {principal.id} cannot call the approval tool "
                                         f"{tool}; a buyer or manager must")
+    if tool == "reject_po" and principal.role != ROLE_MANAGER:
+        return Decision(False, "POL-1", f"only role manager decides an approval request; "
+                                        f"{principal.id} has role {principal.role}")
     if tool in PANEL_TOOLS and resource.get("ZZPANEL") != "X":
         return Decision(False, "POL-2", f"supplier {resource.get('LIFNR')} is not on the "
                                         "approved panel")

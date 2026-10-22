@@ -22,6 +22,11 @@ the part that still arrives on time (capacity shortfall), or keep it. GESIT does
 not change the old PO itself: PRD section 8 has no tool for it, so the buyer does
 it in S/4 (proposal item 5).
 
+Each draft also keeps the case's ranked table (RANKING, DRAFT_RANK) and its old PO
+line (OLD_PO_TEXT), so a manager's reject hours later can name the next option for
+the buyer from the same table, without scoring again (`tools.action.reject_po`,
+proposal item 11).
+
 The agent never releases a PO: `release_po` is an approval tool and POL-4 denies
 it to agents. Only a human principal releases (`human_approvals` stands in for
 the clicks in the terminal). No LLM is used here; every value comes from the
@@ -60,6 +65,21 @@ def order_parts(row: dict[str, Any]) -> list[dict[str, Any]]:
         parts.append({"LIFNR": split["LIFNR"], "MENGE": split["MENGE"], "NETPR": split["NETPR"],
                       "EINDT": split["ARRIVAL"]})
     return parts
+
+
+RANKING_FIELDS = ("RANK", "OPTION", "LIFNR", "KEEP_EBELN", "MENGE", "NETPR", "ARRIVAL",
+                  "EXPECTED_STOCKOUT_DAYS", "EXPECTED_COST")
+
+
+def ranking_snapshot(case: dict[str, Any]) -> list[dict[str, Any]]:
+    """The case's ranked rows, as saved with each draft (numbers copied, not recomputed)."""
+    rows = []
+    for row in case["SCORING"]["CANDIDATES"]:
+        split = row.get("SPLIT_WITH")
+        rows.append({**{k: row.get(k) for k in RANKING_FIELDS},
+                     "SPLIT_WITH": {k: split[k] for k in ("LIFNR", "MENGE", "NETPR", "ARRIVAL")}
+                     if split else None})
+    return rows
 
 
 def reason_text(case: dict[str, Any], part_no: int, n_parts: int,
@@ -179,10 +199,12 @@ class ActionAgent:
                 cases.append(out)
                 continue
             parts = order_parts(row)
+            saved = {"RANKING": ranking_snapshot(case), "DRAFT_RANK": row["RANK"],
+                     "OLD_PO_TEXT": (out["OLD_PO"] or {}).get("TEXT")}
             for i, part in enumerate(parts, 1):
                 out["ORDERS"].append(self._draft_and_route(
                     case, part, reason_text(case, i, len(parts), row, override_id),
-                    buyer(owner_id), steps))
+                    buyer(owner_id), steps, saved))
             cases.append(out)
         return {
             "AGENT": AGENT_NAME,
@@ -215,7 +237,8 @@ class ActionAgent:
         return row, choice["OVERRIDE_ID"]
 
     def _draft_and_route(self, case: dict[str, Any], part: dict[str, Any], reason: str,
-                         owner: Principal, steps: list[dict[str, Any]]) -> dict[str, Any]:
+                         owner: Principal, steps: list[dict[str, Any]],
+                         saved: dict[str, Any] | None = None) -> dict[str, Any]:
         """One draft (FR-ACT-1), the buyer's release check, and approval routing (FR-ACT-2)."""
         drafted = draft_po(part["LIFNR"], case["SCORING"]["MATNR"], part["MENGE"], part["NETPR"],
                            part["EINDT"], reason, store=self.store, ernam=owner.id,
@@ -230,6 +253,8 @@ class ActionAgent:
                     "APPROVAL_REQUEST_ID": None}
 
         po = drafted["PO"]
+        if saved:   # the ranked table stays with the PO until the manager decides
+            self.store.update(po["EBELN"], None, **saved)
         check = authorize("release_po", owner, po)          # same rule release_po applies
         steps.append({"TOOL": "policy_check",
                       "INPUT": {"tool": "release_po", "principal": owner.id, "ebeln": po["EBELN"]},

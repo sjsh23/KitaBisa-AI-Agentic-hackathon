@@ -1,24 +1,33 @@
-"""Action tools (PRD section 8): draft_po, submit_for_approval, release_po (FR-ACT-1, FR-ACT-2).
+"""Action tools (PRD section 8): draft_po, submit_for_approval, release_po (FR-ACT-1, FR-ACT-2),
+plus the manager's side of the approval: list_pending_approvals and reject_po
+(built, waiting for team agreement: docs/prd_change_proposals.md item 11).
 
 Every call is checked by `policy.authorize` first (POL-1 to POL-4); a denied call
 changes nothing except the PO's history, and returns RESULT "DENIED" with the
-policy that denied it. Amounts IDR integers, quantities KG, dates ISO, SAP field
-names (D-2).
+policy that denied it. A call on a PO in the wrong status (approving or rejecting
+twice, approving a REJECTED PO, rejecting a RELEASED one) raises ValueError and
+changes nothing. Every history event has its time (AT, Asia/Jakarta). Amounts IDR
+integers, quantities KG, dates ISO, SAP field names (D-2).
 """
 from __future__ import annotations
 
-from typing import Any
+from datetime import datetime
+from typing import Any, Mapping
 
 from adapters import PoStore
-from adapters.po_store import STATUS_DRAFT, STATUS_PENDING, STATUS_RELEASED
+from adapters.po_store import STATUS_DRAFT, STATUS_PENDING, STATUS_REJECTED, STATUS_RELEASED
 from policy import AGENT, Decision, Principal, authorize
+from tools.integrity_tools import (JAKARTA, MIN_JUSTIFICATION_CHARS, option_label,
+                                   record_rejection)
 
 APPROVAL_PREFIX = "APR-"
+MIN_REJECT_REASON_CHARS = MIN_JUSTIFICATION_CHARS   # same rule as an override (FR-INT-1)
 
 
 def _event(tool: str, principal: Principal, decision: Decision, result: str) -> dict[str, Any]:
     return {"TOOL": tool, "BY": principal.id, "ROLE": principal.role, "RESULT": result,
-            "POLICY": decision.policy, "REASON": decision.reason}
+            "POLICY": decision.policy, "REASON": decision.reason,
+            "AT": datetime.now(JAKARTA).isoformat(timespec="seconds")}
 
 
 def _template(store: PoStore, matnr: str, replaces: str | None) -> tuple[dict, dict]:
@@ -55,7 +64,8 @@ def draft_po(lifnr: str, matnr: str, qty: float, netpr: int, eindt: str, reason:
         "MENGE": float(qty), "MEINS": item["MEINS"], "NETPR": int(netpr), "PEINH": 1,
         "NETWR": netwr, "EINDT": eindt,
         "STATUS": STATUS_DRAFT, "REPLACES_EBELN": replaces, "REASON": reason,
-        "APPROVAL_REQUEST_ID": None, "RELEASED_BY": None,
+        "APPROVAL_REQUEST_ID": None, "RELEASED_BY": None, "REJECTED_BY": None,
+        "REJECT_REASON": None,
         "HISTORY": [_event("draft_po", principal, decision, STATUS_DRAFT)],
     }
     po = store.add(po)
@@ -103,3 +113,68 @@ def release_po(ebeln: str, *, store: PoStore, principal: Principal) -> dict[str,
                  STATUS=STATUS_RELEASED, RELEASED_BY=principal.id)
     return {"RESULT": "RELEASED", "EBELN": ebeln, "POLICY_DECISION": decision.as_dict(),
             "STATUS": STATUS_RELEASED}
+
+
+def _submitted_at(po: Mapping[str, Any]) -> str | None:
+    return next((e.get("AT") for e in reversed(po["HISTORY"])
+                 if e["TOOL"] == "submit_for_approval" and e["RESULT"] == STATUS_PENDING), None)
+
+
+def list_pending_approvals(*, store: PoStore, principal: Principal) -> dict[str, Any]:
+    """Every PO waiting for the manager, with what the manager needs to decide (FR-ACT-2)."""
+    decision = authorize("list_pending_approvals", principal)
+    if not decision.allowed:
+        return {"RESULT": "DENIED", "POLICY_DECISION": decision.as_dict(), "PENDING": []}
+    pending = [{"EBELN": po["EBELN"], "APPROVAL_REQUEST_ID": po["APPROVAL_REQUEST_ID"],
+                "LIFNR": po["LIFNR"], "MENGE": po["MENGE"], "NETWR": po["NETWR"],
+                "REPLACES_EBELN": po["REPLACES_EBELN"], "ERNAM": po["ERNAM"],
+                "REASON": po["REASON"], "SUBMITTED_AT": _submitted_at(po)}
+               for po in store.all() if po["STATUS"] == STATUS_PENDING]
+    return {"RESULT": "OK", "POLICY_DECISION": decision.as_dict(), "PENDING": pending,
+            "DATA_NOTE": "simulated data"}
+
+
+def next_option(po: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The best row of the ranked table saved with the draft, other than the drafted one.
+
+    That is the next new order, or keeping the current PO when it ranked higher. Read
+    from the saved table only: nothing is scored again and nothing is drafted.
+    """
+    rows = sorted(po.get("RANKING") or [], key=lambda r: r["RANK"])
+    return next((r for r in rows if r["RANK"] != po.get("DRAFT_RANK")), None)
+
+
+def reject_po(ebeln: str, reason: str, *, store: PoStore, principal: Principal,
+              log_path: str | None = None) -> dict[str, Any]:
+    """The manager rejects a PO waiting for approval (FR-ACT-2 reject path, POL-1, POL-4).
+
+    Only a PENDING_APPROVAL PO; only role manager (agents are denied by POL-4, a buyer
+    by POL-1); a reason of at least 20 characters. The rejected draft is never
+    released and the PO it replaces is not touched. The reject goes to the decision
+    log with the next option for the buyer, which is returned but not drafted.
+    """
+    po = store.get(ebeln)
+    if po["STATUS"] != STATUS_PENDING:
+        raise ValueError(f"PO {ebeln} is {po['STATUS']}, only a PENDING_APPROVAL PO can be "
+                         "rejected; nothing changed")
+    decision = authorize("reject_po", principal, po)
+    if not decision.allowed:
+        store.update(ebeln, _event("reject_po", principal, decision, "DENIED"))
+        return {"RESULT": "DENIED", "EBELN": ebeln, "POLICY_DECISION": decision.as_dict(),
+                "STATUS": po["STATUS"]}
+    chars = len((reason or "").strip())
+    if chars < MIN_REJECT_REASON_CHARS:
+        return {"RESULT": "REFUSED", "EBELN": ebeln, "POLICY_DECISION": decision.as_dict(),
+                "STATUS": po["STATUS"],
+                "MESSAGE": f"a reject needs a reason of at least {MIN_REJECT_REASON_CHARS} "
+                           f"characters ({chars} given); nothing changed"}
+    event = {**_event("reject_po", principal, decision, STATUS_REJECTED),
+             "REJECT_REASON": reason.strip()}
+    po = store.update(ebeln, event, STATUS=STATUS_REJECTED, REJECTED_BY=principal.id,
+                      REJECT_REASON=reason.strip())
+    option = next_option(po)
+    reject_id = record_rejection(po, option, path=log_path)
+    return {"RESULT": "REJECTED", "EBELN": ebeln, "POLICY_DECISION": decision.as_dict(),
+            "STATUS": STATUS_REJECTED, "REJECT_ID": reject_id,
+            "REPLACES_EBELN": po["REPLACES_EBELN"], "NEXT_OPTION": option,
+            "NEXT_OPTION_LABEL": option_label(option) if option else None}

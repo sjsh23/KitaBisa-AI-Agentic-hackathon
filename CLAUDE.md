@@ -54,6 +54,14 @@ python -m agents.run S1
 # Integrity Guard: the buyer's own choice, justification rule, override log, pattern flags
 # (no --choose = take #1; --choose <LIFNR> or keep; log at DECISION_LOG_PATH, default ./decision_log.jsonl)
 python -m agents.integrity S1 --buyer BUYER01 --choose 100108 --justification "text of 20+ characters"
+# Supervisor (FR-SUP-1 to FR-SUP-3): prints the plan, runs Detection, Supplier Evaluation,
+# (Integrity Guard on --choose), Action as a Strands Graph; stops and hands back, never waits.
+# Plan log at PLAN_LOG_PATH, POs saved at PO_STORE_PATH (defaults next to the decision log)
+python -m agents.supervisor S1 [--no-llm] [--choose LIFNR --justification "..."]
+# Manager approval step on the saved POs (FR-ACT-2): list, approve, or reject with a reason
+python -m agents.approvals list
+python -m agents.approvals approve <EBELN> --as MANAGER01
+python -m agents.approvals reject <EBELN> --as MANAGER01 --reason "text of 20+ characters"
 # Monte Carlo against baselines (FR-EVA-4): GESIT, always-cheapest, always-fastest, keep the PO,
 # outcomes from data_gen/world.py (eval/ only, D-1); --json PATH writes the numbers
 python -m eval.monte_carlo --scenario all --runs 1000 --seed 42

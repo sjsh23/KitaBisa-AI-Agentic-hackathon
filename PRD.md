@@ -6,7 +6,7 @@ Agentic AI Hackathon 2026, Track A: Intelligent Supply Chain (Sokrates with AWS,
 | | |
 |---|---|
 | Status | Building toward Final/Demo Day, **Saturday 31 October 2026** (in person, 15 min incl. Q&A, **English**) |
-| Last updated | 21 October 2026 |
+| Last updated | 22 October 2026 |
 | Feature freeze | 25 October 2026 |
 | Source documents | Accepted proposal, finalist work plan (feedback), participant briefing deck |
 
@@ -272,7 +272,7 @@ gesit/
 |---|---|---|
 | by 5 Oct | Accounts, budget alert, BAIP request, role split | in progress |
 | by 6 Oct | Synthetic data generator | done; dataset generated on real PIHPS prices on 6 Oct, regenerated 8 Oct (market type id confirmed 8 Oct) |
-| 5-11 Oct | Core loop in terminal: disruption, scoring, explanation, draft PO (RPT stubbed) | in progress, late (20 Oct): Detection, Supplier Evaluation and Action run in the terminal; the supervisor and its plan are missing |
+| 5-11 Oct | Core loop in terminal: disruption, scoring, explanation, draft PO (RPT stubbed) | done, late (22 Oct): the supervisor (Strands Graph) prints its plan and runs Detection, Supplier Evaluation, Integrity Guard and Action in the terminal; manager approve and reject in the terminal (reject path waiting for team agreement) |
 | 12-18 Oct | SAP-RPT on AI Core, Gen AI Hub, deploy to AgentCore, Gateway, Policy | in progress, late (20 Oct): SAP-RPT on AI Core and the Gen AI Hub models are in use; Gen AI Hub orchestration (masking, grounding), AgentCore, Gateway and Policy (Cedar) not started; policies run as local Python |
 | 19-25 Oct | Integrity Guard, Monte Carlo eval, reliability update, Joule UI. **Freeze 25 Oct** | not started (20 Oct) |
 | 26-31 Oct | Reset script, 10x runs, backup video, deck, 3 timed rehearsals in English | not started |
@@ -343,3 +343,4 @@ Decided on 8 Oct 2026 (team to object by 9 Oct, otherwise these stand):
 - 2026-10-20: FR-SEL-3: fastest is marked only among new orders that can cover the full quantity from one supplier (a split order is ranked but never marked fastest).
 - 2026-10-21: FR-DET-4, FR-EVA-2, FR-SEL-2, section 8: the delay risk is the 50:50 blend of SAP-RPT and the supplier's reliability posterior (goods receipts before the decision date only); with SAP-RPT unavailable the posterior alone. Known limit: the blend does not catch the slow drift of supplier 100108 (simulated). Team decision. The FR-SEL-2 p_late bullet now names the FR-DET-4 delay risk instead of SAP-RPT alone, and the FR-EVA-2 clause "shows up within weeks" now reads "meant to let ... show up".
 - 2026-10-21: FR-EVA-4, section 4, section 16: Monte Carlo robustness over 11 simulated worlds and downtime costs of Rp50 to 300 juta per day; claims reworded from 'proven against baselines' to 'tested against baselines in simulation'; GESIT is cheaper than always-cheapest and keeping the PO in most worlds and close to always-fastest, which is cheaper on average (simulated). Goal 5 (section 2) reworded from "show that GESIT beats" to "test how GESIT compares with" the two baselines.
+- 2026-10-22: Section 14 status: the core loop milestone is done (supervisor with its plan, manager approve and reject in the terminal). No requirement changed; the supervisor order and the reject path wait for the team in `docs/prd_change_proposals.md` items 10 and 11.

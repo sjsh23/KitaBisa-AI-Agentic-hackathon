@@ -30,6 +30,8 @@ DEFAULT_DECISION_LOG = "decision_log.jsonl"
 # Asia/Jakarta (WIB) is UTC+7 all year, without daylight saving; a fixed offset needs no tzdata.
 JAKARTA = timezone(timedelta(hours=7), "Asia/Jakarta")
 OVERRIDE_PREFIX = "OVR-"
+REJECT_PREFIX = "REJ-"
+ENTRY_REJECT = "REJECT"   # a manager's reject (FR-ACT-2 reject path, proposal item 11)
 
 
 # ------------------------------------------------------------------- options
@@ -84,13 +86,26 @@ def decision_log_path(path: str | os.PathLike[str] | None = None) -> Path:
     return Path(path or os.environ.get(DECISION_LOG_ENV) or DEFAULT_DECISION_LOG)
 
 
-def read_overrides(path: str | os.PathLike[str] | None = None) -> list[dict[str, Any]]:
-    """Every logged override, oldest first; an empty list when the log does not exist."""
+def _read_log(path: str | os.PathLike[str] | None = None) -> list[dict[str, Any]]:
     log = decision_log_path(path)
     if not log.exists():
         return []
     with open(log, encoding="utf-8") as fh:
         return [json.loads(line) for line in fh if line.strip()]
+
+
+def read_overrides(path: str | os.PathLike[str] | None = None) -> list[dict[str, Any]]:
+    """Every logged override, oldest first; an empty list when the log does not exist.
+
+    Override entries carry no ENTRY_TYPE (unchanged since FR-INT-2); other entry types
+    in the same log, such as a manager's reject, are left out.
+    """
+    return [e for e in _read_log(path) if "ENTRY_TYPE" not in e]
+
+
+def read_rejections(path: str | os.PathLike[str] | None = None) -> list[dict[str, Any]]:
+    """Every logged reject of a PO waiting for approval, oldest first."""
+    return [e for e in _read_log(path) if e.get("ENTRY_TYPE") == ENTRY_REJECT]
 
 
 def clear_decision_log(path: str | os.PathLike[str] | None = None) -> None:
@@ -146,6 +161,39 @@ def record_override(ebeln: str, recommended: str, chosen: str, justification: st
     with open(log, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
     return override_id
+
+
+def record_rejection(po: Mapping[str, Any], next_option: Mapping[str, Any] | None, *,
+                     path: str | os.PathLike[str] | None = None,
+                     now: datetime | None = None) -> str:
+    """Log a manager's reject as its own entry type and return its id (REJ-<EBELN>-<n>).
+
+    `po` is the rejected PO after the reject (REJECTED_BY, REJECT_REASON filled);
+    `next_option` is the row of its saved ranked table offered to the buyer next.
+    """
+    log = decision_log_path(path)
+    reject_id = f"{REJECT_PREFIX}{po['EBELN']}-{len(read_rejections(log)) + 1:03d}"
+    entry = {
+        "ENTRY_TYPE": ENTRY_REJECT,
+        "TIMESTAMP": (now or datetime.now(JAKARTA)).astimezone(JAKARTA).isoformat(
+            timespec="seconds"),
+        "REJECT_ID": reject_id,
+        "EBELN": po["EBELN"],
+        "APPROVAL_REQUEST_ID": po["APPROVAL_REQUEST_ID"],
+        "REPLACES_EBELN": po["REPLACES_EBELN"],
+        "LIFNR": po["LIFNR"],
+        "NETWR": int(po["NETWR"]),
+        "BUYER": po["ERNAM"],
+        "REJECTED_BY": po["REJECTED_BY"],
+        "REJECT_REASON": po["REJECT_REASON"],
+        "NEXT_OPTION": option_label(next_option) if next_option else None,
+        "NEXT_OPTION_EXPECTED_COST": int(next_option["EXPECTED_COST"]) if next_option else None,
+        "DATA_NOTE": "simulated data",
+    }
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with open(log, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return reject_id
 
 
 # ---------------------------------------------------------------- flags tool

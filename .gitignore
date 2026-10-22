@@ -5,3 +5,6 @@ __pycache__/
 .venv/
 .pytest_cache/
 decision_log.jsonl
+plan_log.jsonl
+po_store.json
+po_store.json.tmp

@@ -304,9 +304,107 @@ to them in Detection's urgency order; a case's ranked table does not depend on w
 are shown." Add to FR-SEL-3: "On an equal price, cheapest goes to fewer expected stock-out
 days, then more spare capacity, then the lower LIFNR."
 
+## 10. Supervisor choices where the PRD is silent (FR-SUP-1 to FR-SUP-3, FR-INT-1, NFR-1)
+
+**Status:** built, waiting for team agreement (22 Oct 2026). `agents/supervisor.py`.
+
+- **Orchestration.** A Strands Graph (`strands.multiagent.GraphBuilder`, strands-agents
+  1.61.0). Each node is a plain Python step (`StepNode`, a `MultiAgentBase` whose
+  `invoke_async` calls the existing agent), each edge is fixed in code, and an edge is followed
+  only while no stop rule has fired. No LLM decides the route; agents-as-tools was not used
+  because there the supervisor model would pick the next tool.
+- **Integrity Guard runs before Action, not after.** FR-SUP-2 lists "Action, then Integrity
+  Guard", but FR-INT-1 needs the justification before the draft is created. So when the buyer
+  passes `--choose` with an option other than #1, the Integrity Guard checks and logs the
+  override first and Action drafts the logged choice (as `agents.integrity` already did). With
+  `--choose` naming #1 the step is SKIPPED. The choice applies to the most urgent case shown.
+  Proposed FR-SUP-2 text: "Run Detection, then Supplier Evaluation, then Integrity Guard when
+  the buyer chooses an option other than #1, then Action; Evaluation and Learning runs offline."
+- **Trigger.** A scenario id (S1, S2, S3, all) stands in for a supplier notice, `scan` for a
+  scheduled scan; both take the same path.
+- **Plan.** Built in code before anything runs: ordered steps, agent, why. It cannot name the
+  number of flagged POs before Detection has run, so each step's RESULT (for example "3
+  flagged", "1 draft: 4500000435 PENDING_APPROVAL") is filled in when the step ends.
+- **Plan log.** One JSON line per run at PLAN_LOG_PATH (default `plan_log.jsonl` next to the
+  decision log, gitignored), written when the run ends, also after a failed step. Every step has
+  STATUS (DONE, SKIPPED, NOT_RUN, FAILED), SECONDS and RESULT, plus the stop rule and per case
+  who decides next. Plan ids `PLAN-<n>`.
+- **Stop rules, each a normal outcome.** Nothing flagged: stop after Detection, "no action
+  needed". Keeping the current PO ranks #1 for every case: stop after Supplier Evaluation,
+  nothing drafted, the old PO line is printed in the outcome instead of an Action section. No
+  candidate supplier for a case: that case goes back to the buyer, the others go on; when no
+  case has a new order to draft the run stops after Supplier Evaluation. A justification under
+  20 characters: stop after the Integrity Guard, nothing drafted. Policy denies release: the
+  draft is submitted for approval and the run ends, handed back to the manager; the supervisor
+  never waits and never calls `release_po`. A POL-2 block (not reachable today: off-panel
+  suppliers are never ranked) is also handed back.
+- **PO store.** The supervisor CLI uses the saved PO store (item 11), so EBELNs continue across
+  runs; `agents.run` keeps the in-memory store and its numbers.
+
+## 11. Proposed PRD change: manager approval with a reject path (FR-ACT-2, FR-ACT-3, POL-1, POL-4, section 8)
+
+**Status:** built, waiting for team agreement (22 Oct 2026). `tools/action.py`,
+`adapters/po_store.py`, `agents/approvals.py`.
+
+**Why.** Mentor feedback (21 Oct): "the component that owns the state of the PO should own the
+wait for approval" and "what happens if the manager rejects it". FR-ACT-2 only says the manager
+approves.
+
+**What was built.**
+- **The Action side owns the PO state, across processes.** The PO store can save to and load
+  from a JSON file (PO_STORE_PATH, default `po_store.json` next to the decision log,
+  gitignored); new EBELNs continue from the highest one in the file. `clear_po_store` empties
+  it for the later `scripts/reset_demo`. The in-memory mode stays for the tests and
+  `agents.run`. Each draft keeps the case's ranked table (RANKING, DRAFT_RANK) and its old PO
+  line, and every history event has its time (AT).
+- **`list_pending_approvals()`**: every PENDING_APPROVAL PO with EBELN, APPROVAL_REQUEST_ID,
+  LIFNR, NETWR, REPLACES_EBELN, the draft's reason (rank and expected cost) and the submit time.
+- **approve** reuses `release_po` with the manager principal; no new release logic.
+- **`reject_po(ebeln, reason)`**: an approval tool. POL-4 denies it to every agent principal;
+  only role manager may reject (a buyer is denied under POL-1, since a PENDING_APPROVAL PO is
+  one that POL-1 routed to the manager; alternative: a new POL-5); only a PENDING_APPROVAL PO;
+  the reason needs at least 20 characters (the FR-INT-1 rule). Status REJECTED, with
+  REJECTED_BY, REJECT_REASON and the time in the PO's event list.
+- **Wrong status is an error and changes nothing:** approving or rejecting twice, approving a
+  REJECTED PO, rejecting a RELEASED PO.
+- **After a reject (a normal path).** The rejected draft is never released. The old PO
+  (REPLACES_EBELN) is untouched, so the buyer still has it. The case goes back to the buyer with
+  the next option from the ranked table saved with the draft: the best row other than the one
+  drafted (the next new order, or keeping the current PO when that ranked higher). Nothing is
+  scored again and nothing is drafted; choosing that option over #1 later needs the FR-INT-1
+  justification. The reject is appended to the decision log as its own entry type
+  (`ENTRY_TYPE: REJECT`, id `REJ-<EBELN>-<n>`); override entries are unchanged.
+- **Split orders.** Each part is approved or rejected on its own (POL-1 is checked per PO, see
+  the Action notes in WORKING.md); a reject names the other part if it still waits.
+
+**S1 example (real SAP-RPT-1.6, 22 Oct, simulated data).** The supervisor drafts 4500000435
+(100109, 10,000 kg, NETWR Rp175,500,000), POL-1 denies the buyer's release and it is submitted
+as APR-4500000435. `python -m agents.approvals reject 4500000435 --as MANAGER01 --reason
+"Price too high for this quarter, ask buyer for option 2"` sets it REJECTED; old PO 4500000431
+stays with BUYER01; the next option printed for the buyer is rank 2, 100106, 10,000 kg at
+Rp17,500 per kg, arriving 2026-10-04, expected cost Rp211,760,179 (simulated). A second
+supervisor run drafts 4500000436, and `approve 4500000436 --as MANAGER01` releases it.
+
+**Manager identity.** The approver is the principal given on the command line (`--as
+MANAGER01`, role from `--role`, default manager); the tools take it as an argument and hold no
+user id. In the deployed version this identity comes from the UI login (Joule or the fallback
+UI), passed by the Gateway as the caller identity (section 8), never typed in.
+
+**Proposed PRD text.** Add to FR-ACT-2: "The manager approves (the PO is released) or rejects
+with a reason of at least 20 characters. A rejected draft is never released, the PO it
+replaces is not changed, and the case goes back to the buyer with the next option from the same
+ranked table, not drafted. The reject is logged." Section 8: add `list_pending_approvals` (input
+none; output the POs waiting for approval) and `reject_po` (input ebeln, reason; caller identity
+from the Gateway; output rejected, refused or denied, and the next option). POL-3: permit both.
+POL-4: `reject_po` is an approval tool. POL-1 (or a new POL-5): only role manager may call
+`reject_po`.
+
 ## PRD Changelog draft
 
 Lines to add to the Changelog at the end of `PRD.md` once the team agrees:
+
+- 2026-10-22: FR-SUP-2: Integrity Guard runs before Action when the buyer chooses an option other than #1 (FR-INT-1 needs the justification before the draft); the supervisor is a Strands Graph with fixed edges and logs its plan with seconds per step (item 10).
+- 2026-10-22: FR-ACT-2, section 8, POL-1, POL-3, POL-4: the manager can reject a PO waiting for approval with a reason of at least 20 characters; the draft is never released, the old PO is untouched and the buyer gets the next option from the saved ranked table; new tools `list_pending_approvals` and `reject_po`; the PO store survives between processes (item 11).
 
 - 2026-10-15: FR-SEL-1: suppliers with a flagged PO in the same run are excluded by default (switch EXCLUDE_FLAGGED_SUPPLIERS, reason listed per supplier); suppliers with zero spare capacity are excluded. Open: keep 100103 in S2, since a price revision does not delay delivery.
 - 2026-10-15: FR-SEL-2: split orders made explicit ("cannot cover full quantity", kilograms add up to Q, never ranked above spare capacity); in a run with several flagged POs, the recommended order reserves spare capacity for later cases. The S1 versus `all` difference for 100109 (12,500 kg spare) was this reservation, now shown in the output.
