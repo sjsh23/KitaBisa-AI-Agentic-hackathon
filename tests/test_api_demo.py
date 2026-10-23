@@ -94,7 +94,8 @@ def test_tables_have_four_columns(client):
         if line.startswith("|"):
             assert line.count("|") == 5, line
     s1 = data["CASES"][0]["TABLE_MD"]
-    assert re.search(r"\| 1 \| 100109 \| [\d.,]+ \| Rp17,550/kg, 3 d, fastest \|", s1)
+    assert re.search(r"\| 1 \| 100109 \| Rp [\d,]+\.\d juta \| Rp 17,550/kg, 3 d, fastest \|",
+                     s1)
     assert "cheapest" in s1 and "keep PO 4500000431 (100101)" in s1
 
 
@@ -135,7 +136,10 @@ def test_released_for_manager_and_buyer(client):
 @pytest.mark.parametrize("body", [{}, {"scenario": ""}, {"scenario": "S9"}, {"llm": True}])
 def test_run_without_a_valid_scenario_asks(client, body):
     data = call(client, "POST", "/run", body, 422)
-    assert data["SUMMARY"].startswith("Which scenario: S1, S2, S3 or all?")
+    what = ('Scenario "S9" is not one GESIT knows' if body.get("scenario") == "S9"
+            else "No scenario was given")
+    assert data["SUMMARY"].startswith(f"{what}, so nothing was run. Which scenario: S1, S2, S3 "
+                                      "or all?")
     assert data["NEXT_STEPS"] == ('You can say "Run GESIT on scenario S1" or "Run GESIT on all '
                                   'scenarios".')
     call(client, "POST", "/run/start", body, 422)
@@ -181,8 +185,8 @@ def test_evaluation_from_the_summary_file(client):
     assert md.count("\n|") >= 6 and md.endswith("All numbers simulated.")
     assert all(line.count("|") == 5 for line in md.splitlines() if line.startswith("|"))
     first = md.splitlines()[2]
-    assert first == (f"| GESIT with learning | {ev['TRACKED_TOTAL_JUTA']['GESIT_LEARNING']:,.1f} "
-                     "| baseline (compared against) | 0.0 |")
+    assert first == (f"| GESIT with learning | Rp {ev['TRACKED_TOTAL_JUTA']['GESIT_LEARNING']:,.1f} "
+                     "juta | baseline (compared against) | Rp 0.0 juta |")
     assert "| - |" not in md
 
 
@@ -217,7 +221,7 @@ def test_api_summary_built_from_an_eval_report():
     assert summary["WORLDS"]["VERSUS"]["GESIT_LEARNING"]["ALWAYS_FASTEST"]["MEAN_DIFF_JUTA"] == 8.4
     text = views.evaluation_summary(summary)
     assert "it is about equal to always fastest: cheaper in 3, equal in 5, higher in 3 of 11 " \
-           "worlds, Rp8.4 juta (simulated) higher on average" in text
+           "worlds, Rp 8.4 juta (simulated) higher on average" in text
     with pytest.raises(SystemExit):
         mc.api_summary({k: v for k, v in out.items() if k != "CROSS_WORLD"})
 

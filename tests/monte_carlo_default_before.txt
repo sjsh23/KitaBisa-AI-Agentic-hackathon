@@ -99,7 +99,7 @@ Predictions (made once per case and mode, before the loop): Detection RPT_ONLY s
 GESIT_RPT_ONLY decides with SAP-RPT alone; GESIT_LEARNING with P(late) = 0.5 x SAP-RPT + 0.5 x reliability posterior (Beta, forgetting 0.97 per receipt).
 ALWAYS_CHEAPEST, ALWAYS_FASTEST and KEEP_CURRENT_PO are built from the RPT_ONLY ranked table, as before.
 Outcomes: true delivery behaviour of the simulated world (data_gen/world.py), one draw per supplier and promised date per run, shared by all strategies.
-Stock-out: realised stock-out days = quantity-weighted average over the parts of an order of max(0, real arrival - stock-out date); real arrival = promised date + delay drawn from the simulated world's true behaviour. Short shipments are not counted.
+Stock-out: realised stock-out days = quantity-weighted average over the parts of an order of max(0, real arrival - stock-out date), weighted by the kg each part covers of the need (a MOQ round-up is purchase cost only); real arrival = promised date + delay drawn from the simulated world's true behaviour. Short shipments are not counted.
 Cost = purchase cost (kg x NETPR; the revised price when keeping the PO) + stock-out days x Rp150,000,000 per day of downtime.
 PREDICTED = the expected cost of that row in the strategy's own ranked table (FR-SEL-2). MEAN DIFF = the strategy minus the other one per run; negative means the strategy costs less. CHEAPER and SAME = share of runs where it costs less, or the same.
 EXCLUDE_FLAGGED_SUPPLIERS: True.

@@ -20,9 +20,10 @@ H = {"X-API-Key": KEY}
 REASON = "Price too high for this quarter, ask buyer for option 2"
 JUSTIFICATION = "100109 has only 4 receipts, we prefer a long track record"
 MAX_BYTES = 20_000
-# an amount in SUMMARY without the label: "Rp1,000 (simulated)" or "Rp1,000 higher (simulated)"
-UNMARKED_AMOUNT = re.compile(r"Rp[\d,]*\d(?![\d,]| \(simulated\)| higher \(simulated\)"
-                             r"| higher than the recommended \d{6} \(simulated\))")
+# an amount in SUMMARY without the label: "Rp 1.0 juta (simulated)" or "Rp 1.0 juta higher
+# (simulated)"; any amount in the old format ("Rp1,000") counts as unmarked
+UNMARKED_AMOUNT = re.compile(r"Rp\d|Rp [\d,]+\.\d juta(?! \(simulated\)| higher \(simulated\))")
+MONEY = r"Rp [\d,]+\.\d juta"   # the one chat format for an amount
 
 
 @pytest.fixture
@@ -103,18 +104,26 @@ def test_run_s1(client):
     assert (draft["LIFNR"], draft["MENGE"], draft["NETWR"], draft["NEXT"]) == (
         "100109", 10_000.0, 175_500_000, "manager approval")
     text = data["SUMMARY"]
-    assert 2 <= len(sentences(text)) <= 4
+    assert len(sentences(text)) == 4   # three sentences, then NEXT_STEPS
     assert "recommends ordering from supplier 100109" in text
-    assert re.search(r"The lowest-price supplier, 100105, has an expected cost Rp[\d,]+ higher "
-                     r"\(simulated\), mainly from its delay risk", text), text
+    assert re.search(r"The lowest-price supplier, 100105, has an expected cost " + MONEY
+                     + r" higher \(simulated\), mainly from its delay risk", text), text
     assert "100109 is also the fastest supplier" in text and "would cost" not in text
-    assert "waits for the manager" in text and "Rp175,500,000 (simulated)" in text
+    assert "waits for the manager" in text and "Rp 175.5 juta (simulated)" in text
+    assert "Rp 150.0 juta (simulated)" in text
 
 
 def test_run_s2_keep_drafts_nothing(client):
     data = call(client, "POST", "/run", {"scenario": "s2", "llm": False})
     assert data["DRAFTS"] == [] and data["PLAN"]["OUTCOME"]["CODE"] == "KEEP_EVERYWHERE"
-    assert "keeping PO 4500000432" in data["SUMMARY"] and "Nothing was drafted" in data["SUMMARY"]
+    text = data["SUMMARY"]
+    assert text.startswith("For PO 4500000432 (price increase), the current order is already "
+                           "the best option: keeping it has an expected cost of Rp ")
+    assert "Nothing was changed and no PO was drafted." in text
+    assert "they can override the recommendation with a written justification" in text
+    assert len(sentences(text)) == 4   # three sentences, then NEXT_STEPS
+    assert data["NEXT_STEPS"].startswith('You can say "Run GESIT on scenario S2" or "Override '
+                                         'scenario S2 with supplier ')
 
 
 def test_run_s3_shows_the_moq_mark(client):
@@ -182,8 +191,9 @@ def test_approve_then_double_approve_is_409(client):
     data = call(client, "POST", f"/approvals/{ebeln}/approve", {"as": "MANAGER01"})
     assert data["STATUS"] == "RELEASED" and data["RELEASED_BY"] == "MANAGER01"
     assert "is RELEASED, approved by the procurement manager MANAGER01" in data["SUMMARY"]
-    assert "is RELEASED" in call(client, "POST", f"/approvals/{ebeln}/approve",
-                                 {"as": "MANAGER01"}, 409)["SUMMARY"]
+    assert call(client, "POST", f"/approvals/{ebeln}/approve", {"as": "MANAGER01"}, 409)[
+        "SUMMARY"].startswith(f"PO {ebeln} is already released, so it cannot be approved now; "
+                              "nothing changed. Ask for the pending approvals")
     call(client, "POST", f"/approvals/{ebeln}/reject", {"as": "MANAGER01", "reason": REASON}, 409)
 
 
@@ -272,7 +282,7 @@ def test_versus_phrase_names_the_main_driver(row, driver):
     text = views.versus_phrase(row, best, "lowest-price supplier")
     gap = row["EXPECTED_COST"] - best["EXPECTED_COST"]
     assert text == (f"the lowest-price supplier, {row['LIFNR']}, has an expected cost "
-                    f"Rp{gap:,} higher (simulated), mainly from {driver}")
+                    f"Rp {gap / 1e6:,.1f} juta higher (simulated), mainly from {driver}")
 
 
 def test_versus_phrase_without_extra_cost_has_no_driver():
@@ -295,7 +305,7 @@ def test_table_md_for_s1(client):
     data = call(client, "POST", "/run", {"scenario": "S1", "llm": False})
     md = data["CASES"][0]["TABLE_MD"]
     lines = md.splitlines()
-    assert lines[0] == "| Rank | Supplier | Expected cost (Rp juta) | Notes |"   # A3: 4 columns
+    assert lines[0] == "| Rank | Supplier | Expected cost | Notes |"   # A3: 4 columns
     assert lines[1] == "|---|---|---|---|"
     rows = [l for l in lines[2:] if l.startswith("| ")]
     # top 3, the lowest-price supplier 100105 (rank 5, named in SUMMARY) and the keep row
@@ -304,7 +314,8 @@ def test_table_md_for_s1(client):
     assert "keep PO 4500000431 (100101)" in rows[-1]
     assert lines[-1] == "All numbers simulated."
     first = data["CASES"][0]["TABLE"][0]
-    assert f"| {first['EXPECTED_COST'] / 1e6:,.1f} |" in rows[0]   # Rp juta, one decimal
+    assert f"| Rp {first['EXPECTED_COST'] / 1e6:,.1f} juta |" in rows[0]   # one decimal
+    assert f"| Rp {first['NETPR']:,}/kg, " in rows[0]
     assert data["TABLE_MD"].startswith("### PO 4500000431 (delay notice)")
 
 
@@ -328,7 +339,9 @@ def test_tables_md_stops_before_the_size_limit(client, monkeypatch):
     monkeypatch.setattr(views, "MD_MAX_BYTES", 900)
     data = call(client, "POST", "/run", {"scenario": "all", "llm": False})
     md = data["TABLE_MD"]
-    assert len(md.encode()) < 900 and md.rstrip().endswith("more cases in CASES.")
+    assert len(md.encode()) < 900 and md.rstrip().endswith(
+        "not shown; run each scenario on its own to see them.")
+    assert "CASES" not in md
 
 
 def test_override_has_table_md(client):

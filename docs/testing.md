@@ -68,7 +68,7 @@ git diff --cached --name-only
 py -3.11 -m pytest -q
 ```
 
-Expected: `424 passed` (22 October 2026). The tests never call the network: SAP-RPT, SAP AI Core and the reasoning models are replaced by fakes.
+Expected: `433 passed` (23 October 2026). The tests never call the network: SAP-RPT, SAP AI Core and the reasoning models are replaced by fakes.
 
 | Test file | What it proves | Requirements |
 |---|---|---|
@@ -85,7 +85,7 @@ Expected: `424 passed` (22 October 2026). The tests never call the network: SAP-
 | `tests/test_monte_carlo.py` | The four strategies match the real recommendation (SAP-RPT replayed from a recorded run); SAP-RPT called once per case and never in the loop, no LLM call; same seed same result, other seed differs; an on-time world costs only the purchase; common random numbers; quantity-weighted stock-out for a split; a case without a fastest row stops; footer text; nothing outside `eval/` uses `data_gen/world.py`, `_truth/` or `eval` | FR-EVA-4, D-1, D-3 |
 | `tests/test_monte_carlo_robustness.py` | Default output unchanged against a frozen copy (`tests/monte_carlo_default_before.txt`) except the renamed headers and footer; two generated worlds: SAP-RPT once per world, case and mode, temporary folders deleted, `data_gen/out` hashes unchanged, a fallback world excluded from the cross-world summary; JSON has `simulated` and the cross-world summary; downtime sweep at Rp150,000,000 equals the main results (decisions fixed and re-made), a higher value raises only strategies with stock-out days; `--baseline-table rpt` gives the old numbers, `same` differs only where the LEARNING table differs; summary table; nothing outside `eval/` imports `eval` | FR-EVA-4, D-1, D-3 |
 | `tests/test_moq.py` | MINBM in the quotes (1,000 kg, 5,000 kg for 100102, simulated); an order part below MINBM raised to MINBM with the extra kg in the purchase cost and a "MOQ +300 kg" mark, risk cost unchanged; spare below MINBM excluded as a full order (BELOW_MOQ) and skipped as a split partner; MINBM equal to the need and a quote without MINBM change nothing; keep row unchanged; reservations and drafts use the ordered kg (NETWR incl. the round-up); the explanation facts name the round-up and pass the check | FR-SEL-1, FR-SEL-2, FR-ACT-1, POL-1, D-3 |
-| `tests/test_api.py` | The HTTP API with FastAPI's TestClient: no start without GESIT_API_KEY, /health without a key, 401 on every other endpoint without or with a wrong key; /run for S1, S2, S3, all and scan (plan steps with STATUS and SECONDS, top 3 rows plus the keep row, MOQ mark, drafts with NEXT, SUMMARY of 2 to 4 sentences with every amount marked simulated); /run/start then /run/{job_id}; /approvals; 403 on a policy deny (POL-1, POL-4); 409 on a double approve and a reject after release; 422 on a short reason and a short justification; /override logs, drafts and returns the integrity flags; /reset then /approvals empty; every response under 20 KB; SUMMARY wording (lowest-price supplier with its main driver, 1 PO waits and 2 POs wait); TABLE_MD columns, Rp juta with one decimal, the simulated line, MOQ and split marks, the cheapest and fastest rows added with their real rank when outside the top 3 (every supplier SUMMARY names), a heading per PO and the 3 KB limit | FR-SUP-1 to FR-SUP-3, FR-ACT-2, FR-INT-1, POL-1, POL-4, D-3, NFR-4 |
+| `tests/test_api.py` | The HTTP API with FastAPI's TestClient: no start without GESIT_API_KEY, /health without a key, 401 on every other endpoint without or with a wrong key; /run for S1, S2, S3, all and scan (plan steps with STATUS and SECONDS, top 3 rows plus the keep row, MOQ mark, drafts with NEXT, SUMMARY of 2 to 4 sentences with every amount marked simulated); /run/start then /run/{job_id}; /approvals; 403 on a policy deny (POL-1, POL-4); 409 on a double approve and a reject after release; 422 on a short reason and a short justification; /override logs, drafts and returns the integrity flags; /reset then /approvals empty; every response under 20 KB; SUMMARY wording (lowest-price supplier with its main driver, 1 PO waits and 2 POs wait); TABLE_MD columns (Rank, Supplier, Expected cost, Notes), amounts as "Rp 178.4 juta" and prices as "Rp 17,550/kg", the simulated line, MOQ and split marks, the cheapest and fastest rows added with their real rank when outside the top 3 (every supplier SUMMARY names), a heading per PO and the 3 KB limit | FR-SUP-1 to FR-SUP-3, FR-ACT-2, FR-INT-1, POL-1, POL-4, D-3, NFR-4 |
 | `tests/test_speed.py` | Same Detection and Supplier Evaluation output with and without the SAP-RPT cache (fake SAP-RPT), cache hit and miss (one cell, another model id), no credential in the key, copies returned, POST /reset keeps the cache; the SAP-RPT token shared by clients and fetched again after expiry, the AI Core token fetched once by 8 threads and refreshed; explanations in parallel with the same order and checks as one by one, the Detection text in parallel with Supplier Evaluation and the same report as agents.run; plan log "SAP-RPT: called" then "cached" with the calls and their seconds; warm-up does not block /health, finishes offline with its failures recorded, fills the cache for S1, S2, S3 and all | NFR-1, FR-DET-1, FR-SEL-4, D-3 |
 | `tests/test_api_fixes.py` | Quoted reason and justification (422 and success); one open draft per flagged PO (second override supersedes the first, 409 on a superseded draft, left out of /approvals, rejected drafts left alone, split parts never supersede each other); override SUMMARY with the gap, the flagged pair by name, neutral words; `all` repeats no sentence and no table; NEXT_STEPS on every endpoint; buyer approval with "as": "BUYER" and a clear 403 above the threshold; PLAN_MD under 1 KB; GET /integrity; the explanation under each table and rows cut before it is dropped | FR-ACT-1 to FR-ACT-3, FR-INT-1 to FR-INT-4, FR-SEL-4, D-3 |
 | `tests/test_api_edge_cases.py` | C1 to C6 below, on modified copies of the data in a temp folder | FR-SEL-1, FR-SEL-2, FR-ACT-1, FR-ACT-2, POL-2, FR-INT-1, D-1 |
@@ -367,8 +367,10 @@ are written live on every run. Without the warm-up (`GESIT_WARMUP=0`) the first 
 
 ### Evaluation summary for GET /evaluation
 
-Regenerate it (about 5 minutes, real SAP-RPT) whenever the data, the scoring or the agents
-change, and commit the file:
+Regenerate it (about 5 minutes, real SAP-RPT) whenever the data, the scoring, the agents or
+the Monte Carlo change, and commit the file (last regenerated 23 October 2026, after the MOQ
+weighting fix: only always-cheapest moved, in one world; every GESIT count unchanged,
+simulated):
 
 ```bash
 python -m eval.monte_carlo --scenario all --worlds predeclared --runs 1000 --seed 42 --summary --api-summary integrations/api/evaluation_summary.json
@@ -444,7 +446,8 @@ What to check:
   `--baseline-table rpt` leaves it out,
 - the footer says "simulated data", the seed and runs, the delay model used for the
   predictions, "No SAP-RPT or LLM call inside the loop", the quantity-weighted stock-out
-  definition and Rp150,000,000 per day of downtime,
+  definition (each part weighted by the kg it covers of the need; the extra kg of a MOQ
+  round-up is purchase cost only, since 23 October 2026) and Rp150,000,000 per day of downtime,
 - the same command twice gives the same output; another `--seed` changes the numbers but,
   on 20 October 2026, not the ranking of the strategies,
 - a run takes about 16 s, almost all of it the SAP-RPT predictions; the loop is under 1 s.

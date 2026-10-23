@@ -18,8 +18,16 @@ KEY = "test-key-not-a-secret"
 H = {"X-API-Key": KEY}
 REASON = "the price is too high this quarter"
 JUSTIFICATION = "100108 has a long-term contract with our plant"
-UNMARKED_AMOUNT = re.compile(r"Rp[\d,]*\d(?![\d,]| \(simulated\)| higher \(simulated\)"
-                             r"| higher than the recommended \d{6} \(simulated\))")
+# an amount without "(simulated)", or in the old "Rp1,000" format (one chat format: "Rp 1.0 juta")
+UNMARKED_AMOUNT = re.compile(r"Rp\d|Rp [\d,]+\.\d juta(?! \(simulated\)| higher \(simulated\))")
+
+
+def sentences(text):
+    """Sentences of a SUMMARY; quoted text is one token."""
+    text = re.sub(r'"[^"]*"', '"Q"', text.strip())
+    return [s for s in re.split(r"(?<=[.!?])\s+", text) if s]
+
+
 NEXT = re.compile(r'You can say "[^"]+"( or "[^"]+")*\.$')
 
 
@@ -70,7 +78,9 @@ def test_short_reject_reason_is_quoted_exactly(client):
     data = call(client, "POST", "/approvals/4500000435/reject",
                 {"as": "MANAGER01", "reason": "too high"}, 422)
     assert data["SUMMARY"].startswith('Reason "too high" has 8 characters, at least 20 are '
-                                      "needed.")
+                                      "needed, so nothing changed and PO 4500000435 stays "
+                                      "PENDING_APPROVAL. Send the rejection again with a reason "
+                                      "of at least 20 characters.")
     assert data["REASON_CHARS"] == 8
     assert 'Reject purchase order 4500000435. Reason: ...' in data["NEXT_STEPS"]
 
@@ -86,7 +96,24 @@ def test_reject_quotes_the_reason_as_received(client):
 def test_short_justification_is_quoted_exactly(client):
     data = override(client, justification="cheaper", status=422)
     assert data["SUMMARY"].startswith('Justification "cheaper" has 7 characters, at least 20 '
-                                      "are needed. No draft PO was created.")
+                                      "are needed, so nothing changed and no draft PO was "
+                                      "created. Send the override again with a justification "
+                                      "of at least 20 characters.")
+
+
+def test_override_to_an_unranked_option_says_what_to_do(client):
+    data = override(client, choose="100111", justification="cheaper", status=422)
+    assert data["SUMMARY"].startswith('"100111" is not one of the ranked options (100109, ')
+    assert ("so nothing changed and no draft PO was created. Choose one of the ranked options "
+            "in the table and try again.") in data["SUMMARY"]
+    assert call(client, "GET", "/approvals")["PENDING"] == []
+
+
+def test_override_with_an_unknown_scenario_asks(client):
+    data = call(client, "POST", "/override", {"scenario": "S7", "choose": "100108"}, 422)
+    assert data["SUMMARY"].startswith("The scenario is not S1, S2 or S3, so nothing changed. "
+                                      "Which scenario: S1, S2 or S3?")
+    assert data["NEXT_STEPS"] == 'You can say "Run GESIT on scenario S1".'
 
 
 def test_override_quotes_the_justification(client):
@@ -106,8 +133,11 @@ def test_second_override_supersedes_the_first_draft(client):
     assert [p["EBELN"] for p in pending] == [second]
     for verb, body in (("approve", {"as": "MANAGER01"}),
                        ("reject", {"as": "MANAGER01", "reason": REASON})):
-        msg = call(client, "POST", f"/approvals/{first}/{verb}", body, 409)["SUMMARY"]
+        data = call(client, "POST", f"/approvals/{first}/{verb}", body, 409)
+        msg = data["SUMMARY"]
         assert f"PO {first} is SUPERSEDED by draft PO {second} and can never be released" in msg
+        assert "nothing changed" in msg and f"Approve or reject PO {second} instead." in msg
+        assert data["NEXT_STEPS"].startswith(f'You can say "Approve purchase order {second}"')
 
 
 def test_run_again_supersedes_and_rejected_drafts_are_left_alone(client):
@@ -116,7 +146,8 @@ def test_run_again_supersedes_and_rejected_drafts_are_left_alone(client):
     data = run(client, "S1")                                 # 4500000436, 435 was rejected
     assert data["SUPERSEDED"] == [] and "supersedes" not in data["SUMMARY"]
     data = run(client, "S1")                                 # 4500000437 supersedes 436
-    assert "Draft PO 4500000437 supersedes draft PO 4500000436." in data["SUMMARY"]
+    assert "superseding draft PO 4500000436." in data["SUMMARY"]
+    assert len(sentences(data["SUMMARY"])) == 4   # still three sentences, then NEXT_STEPS
 
 
 def test_split_parts_never_supersede_each_other(tmp_path):
@@ -149,8 +180,8 @@ def test_split_parts_never_supersede_each_other(tmp_path):
 def test_override_summary_names_the_gap_the_flags_and_stays_neutral(client):
     data = override(client)
     text = data["SUMMARY"]
-    assert re.search(r"100108 has an expected cost Rp[\d,]+ higher than the recommended 100109 "
-                     r"\(simulated\)\.", text)
+    assert re.search(r"100108 has an expected cost Rp [\d,]+\.\d juta \(simulated\) higher than "
+                     r"the recommended 100109\.", text)
     # A4: the overriding buyer's own pair first, then the others
     assert "BUYER01 with 100108 is not flagged." in text
     assert ("Other flagged pairs: BUYER03 with 100107, 27 of 113 POs, 7.7x the expected rate "
@@ -210,8 +241,10 @@ def test_buyer_approves_a_draft_within_policy(client):
 def test_buyer_above_the_threshold_gets_a_clear_403(client):
     run(client, "S1")
     data = call(client, "POST", "/approvals/4500000435/approve", {"as": "buyer"}, 403)
-    assert data["SUMMARY"].startswith("Approve by BUYER01 (buyer) denied by POL-1: only role "
-                                      "manager decides a PO above the approval threshold.")
+    assert data["SUMMARY"].startswith(
+        "Approve by BUYER01 (buyer) was denied by POL-1: only the procurement manager decides a "
+        "PO above the approval threshold of Rp 150.0 juta (simulated), so nothing changed and PO "
+        "4500000435 stays PENDING_APPROVAL. Ask the procurement manager to approve or reject it.")
     assert 'Approve purchase order 4500000435"' in data["NEXT_STEPS"]
     assert call(client, "GET", "/approvals")["PENDING"][0]["EBELN"] == "4500000435"
 
@@ -221,11 +254,16 @@ def test_plan_md_shows_the_agents_at_work(client):
     data = run(client, "S1", llm=True)
     md = data["PLAN_MD"]
     assert len(md.encode()) < 1_000
-    assert md.startswith("**Agents at work** (supervisor plan PLAN-001, Strands Graph")
+    assert md.startswith("**Outcome:** Handed back to the manager; GESIT does not wait for an "
+                         "approval.")
     for line in ("- Step 1, Disruption Detection: DONE in", "- Step 2, Supplier Evaluation: DONE in",
-                 "- Step 3, Action: DONE in", "\n\nEvaluation and Learning: offline",
-                 "\n\nStop: "):
+                 "- Step 3, Action: DONE in",
+                 "\n\nEvaluation and Learning: offline (Monte Carlo simulation).",
+                 "\n\n**Agents at work** (supervisor plan PLAN-001, Strands Graph, "):
         assert line in md
+    assert md.splitlines()[-1].startswith("- Step 3, Action: DONE in")   # the agents last
+    for word in ("SAP-RPT", "model text", "eval/", ".py", "Stop:"):   # no internal terms
+        assert word not in md
     assert len(run(client, "all", llm=True)["PLAN_MD"].encode()) < 1_000
 
 
@@ -236,11 +274,26 @@ def test_plan_md_names_sap_rpt_called_or_cached():
         {"NO": 2, "AGENT": "Supplier Evaluation", "STATUS": "DONE", "SECONDS": 4.2,
          "SAP_RPT": "SAP-RPT: called", "CALLS": [{"KIND": "GEN_AI_HUB"}, {"KIND": "GEN_AI_HUB"}]}]}
     md = views.plan_md(plan)
-    assert "- Step 1, Disruption Detection: DONE in 0.0 s, SAP-RPT: cached" in md
-    assert "- Step 2, Supplier Evaluation: DONE in 4.2 s, SAP-RPT: called, 2 model texts" in md
-    blocks = md.split("\n\n")   # A2: header, the step list, Evaluation and Learning
-    assert blocks[0].startswith("**Agents at work**") and blocks[1].count("\n- Step ") == 1
-    assert blocks[2].startswith("Evaluation and Learning")
+    assert "- Step 1, Disruption Detection: DONE in 0.0 s\n" in md
+    assert md.endswith("- Step 2, Supplier Evaluation: DONE in 4.2 s")
+    assert "SAP-RPT" not in md and "model text" not in md
+    blocks = md.split("\n\n")   # Evaluation and Learning, then the agents header and steps
+    assert blocks[0] == "Evaluation and Learning: offline (Monte Carlo simulation)."
+    assert blocks[1] == "**Agents at work** (supervisor plan PLAN-009, Strands Graph, 4.3 s)"
+    assert blocks[2].count("\n- Step ") == 1
+
+
+def test_plan_md_says_skipped_and_the_stop_in_plain_words():
+    plan = {"PLAN_ID": "PLAN-010", "TOTAL_SECONDS": 0.1,
+            "OUTCOME": {"CODE": "KEEP_EVERYWHERE", "TEXT": "keeping ... (internal)"},
+            "STEPS": [{"NO": 1, "AGENT": "Disruption Detection", "STATUS": "DONE", "SECONDS": 0.0},
+                      {"NO": 2, "AGENT": "Supplier Evaluation", "STATUS": "DONE", "SECONDS": 0.1},
+                      {"NO": 3, "AGENT": "Action", "STATUS": "NOT_RUN", "SECONDS": None}]}
+    md = views.plan_md(plan)
+    assert md.startswith("**Outcome:** The current order is already the best option, so nothing "
+                         "was changed and no PO was drafted.")
+    assert md.endswith("- Step 3, Action: skipped: nothing to change")
+    assert "NOT_RUN" not in md and "internal" not in md
 
 
 # ------------------------------------------------------------------ B4 integrity
@@ -263,8 +316,18 @@ def test_integrity_endpoint(client):
 def test_explanation_under_each_table(client):
     data = run(client, "S1", llm=True)
     case = data["CASES"][0]
-    assert f"**Why:** {case['EXPLANATION']}" in case["TABLE_MD"]
-    assert f"**Why:** {case['EXPLANATION']}" in data["TABLE_MD"]
+    why = f"**Why:** {views.chat_amounts(case['EXPLANATION'])}"   # amounts as in the table
+    assert why in case["TABLE_MD"] and why in data["TABLE_MD"]
+    assert re.search(r"Rp\d", why) is None
+
+
+@pytest.mark.parametrize("text, chat", [
+    ("at an expected cost of Rp178,446,429.", "at an expected cost of Rp 178.4 juta."),
+    ("Rp 33,026,785 more, Rp17,550 per kg", "Rp 33.0 juta more, Rp 17,550 per kg"),
+    ("1.85 days, 100109 at 17,550", "1.85 days, 100109 at 17,550"),
+])
+def test_chat_amounts(text, chat):
+    assert views.chat_amounts(text) == chat
 
 
 def test_rows_are_shortened_before_the_explanation_is_dropped(client, monkeypatch):
@@ -278,3 +341,22 @@ def test_rows_are_shortened_before_the_explanation_is_dropped(client, monkeypatc
     full = [c["TABLE_MD"].split("\n\n")[0].count("\n| ") for c in data["CASES"]]
     shown = [t.split("\n\n")[1].count("\n| ") for t in md.split("### PO ")[1:]]
     assert sum(shown) < sum(full)   # rows were cut first
+
+
+# ------------------------------------------------- friendly refusals (polish package)
+def test_unknown_po_says_nothing_changed_and_what_to_do(client):
+    data = call(client, "POST", "/approvals/4500009999/reject",
+                {"as": "MANAGER01", "reason": REASON}, 404)
+    assert data["SUMMARY"].startswith("PO 4500009999 was not created by GESIT, so GESIT cannot "
+                                      "reject it; nothing changed. Ask for the pending approvals")
+    assert data["NEXT_STEPS"] == 'You can say "Show pending approvals".'
+
+
+def test_rejecting_a_buyer_draft_says_who_decides(client):
+    draft = run(client, "S3")["DRAFTS"][0]["EBELN"]
+    data = call(client, "POST", f"/approvals/{draft}/reject",
+                {"as": "MANAGER01", "reason": REASON}, 409)
+    assert data["SUMMARY"].startswith(f"PO {draft} is a DRAFT within policy that waits for the "
+                                      "buyer's one-click approval")
+    assert "nothing changed" in data["SUMMARY"]
+    assert f'"Approve purchase order {draft} as the buyer"' in data["NEXT_STEPS"]

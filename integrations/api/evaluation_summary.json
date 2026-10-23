@@ -37,7 +37,7 @@
     "MEAN_TOTAL_JUTA": {
       "GESIT_RPT_ONLY": 476.0,
       "GESIT_LEARNING": 467.6,
-      "ALWAYS_CHEAPEST": 532.5,
+      "ALWAYS_CHEAPEST": 532.7,
       "ALWAYS_FASTEST": 459.2,
       "KEEP_CURRENT_PO": 2172.5
     },
@@ -47,8 +47,8 @@
           "CHEAPER_IN": 9,
           "EQUAL_IN": 0,
           "OF": 11,
-          "MEAN_DIFF_JUTA": -56.5,
-          "MIN_DIFF_JUTA": -118.9,
+          "MEAN_DIFF_JUTA": -56.7,
+          "MIN_DIFF_JUTA": -120.9,
           "MAX_DIFF_JUTA": 47.4
         },
         "ALWAYS_FASTEST": {
@@ -73,8 +73,8 @@
           "CHEAPER_IN": 9,
           "EQUAL_IN": 0,
           "OF": 11,
-          "MEAN_DIFF_JUTA": -64.9,
-          "MIN_DIFF_JUTA": -118.9,
+          "MEAN_DIFF_JUTA": -65.1,
+          "MIN_DIFF_JUTA": -120.9,
           "MAX_DIFF_JUTA": 47.4
         },
         "ALWAYS_FASTEST": {

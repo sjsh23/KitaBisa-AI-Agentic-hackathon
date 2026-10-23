@@ -1,14 +1,18 @@
 """Small JSON views of the agents' reports, each with a chat-ready SUMMARY (D-2, D-3).
 
 Nothing here scores, checks policy or approves: every number is copied from the
-Supplier Evaluation, Action, approval and Integrity Guard results. SUMMARY is a few
-plain-English sentences for Joule; every amount in it says "(simulated)"; text the user
-typed (a reason, a justification) is quoted exactly as received. Every SUMMARY ends with
-NEXT_STEPS, the exact phrases the user can type next (they match the Joule scenarios in
-ui/joule/). TABLE_MD and PLAN_MD are small Markdown blocks for the chat.
+Supplier Evaluation, Action, approval and Integrity Guard results. SUMMARY is two or
+three plain-English sentences for Joule; every amount in it says "(simulated)"; text the
+user typed (a reason, a justification) is quoted exactly as received. Every SUMMARY ends
+with NEXT_STEPS, the exact phrases the user can type next (they match the Joule scenarios in
+ui/joule/). TABLE_MD and PLAN_MD are small Markdown blocks for the chat, shown in that order
+after SUMMARY. Every amount in chat text has one format, "Rp 178.4 juta" (`money`); a price
+per kg reads "Rp 17,550/kg". Chat text names no file and no internal term. A refusal or
+error says what happened, then what to do next, and "nothing changed" where true.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from agents import action
@@ -23,9 +27,41 @@ NEXT_WORDS = {action.NEXT_BUYER: "buyer approval", action.NEXT_MANAGER: "manager
               action.NEXT_BLOCKED: "blocked by policy", action.NEXT_DONE: "released"}
 
 
+def money(amount: int | float) -> str:
+    """An IDR amount in chat text: 178446429 -> "Rp 178.4 juta" (one format everywhere)."""
+    return money_juta(amount / 1_000_000)
+
+
+def money_juta(amount_juta: float) -> str:
+    """An amount already in juta: 466.2 -> "Rp 466.2 juta"."""
+    return f"Rp {amount_juta:,.1f} juta"
+
+
+def signed_money_juta(amount_juta: float) -> str:
+    """A signed gap in juta: -70.7 -> "-Rp 70.7 juta", 8.4 -> "+Rp 8.4 juta"."""
+    return ("-" if amount_juta < 0 else "+") + money_juta(abs(amount_juta))
+
+
+def per_kg(netpr: int | float) -> str:
+    """A price per kg: 17550 -> "Rp 17,550/kg"."""
+    return f"Rp {int(netpr):,}/kg"
+
+
 def rp(amount: int | float) -> str:
-    """An amount for SUMMARY: "Rp175,500,000 (simulated)" (D-3)."""
-    return f"Rp{int(amount):,} (simulated)"
+    """An amount for SUMMARY: "Rp 175.5 juta (simulated)" (D-3)."""
+    return f"{money(amount)} (simulated)"
+
+
+_RP_AMOUNT = re.compile(r"Rp ?(\d{1,3}(?:,\d{3})+|\d+)(?!\d|[,.]\d)")
+
+
+def chat_amounts(text: str) -> str:
+    """Amounts in a checked model text in the chat format: "Rp178,446,429" -> "Rp 178.4 juta",
+    "Rp17,550" -> "Rp 17,550". Display only; the text was checked on the exact numbers."""
+    def one(match: re.Match[str]) -> str:
+        value = int(match.group(1).replace(",", ""))
+        return money(value) if value >= 1_000_000 else f"Rp {value:,}"
+    return _RP_AMOUNT.sub(one, text)
 
 
 def _and(items: list[str]) -> str:
@@ -107,7 +143,7 @@ def marks(row: dict[str, Any]) -> list[str]:
         moq = (f" ({supplier_score.moq_text(split['MOQ_EXTRA_KG'])})"
                if split.get("MOQ_EXTRA_KG") else "")
         out.append(f"split: {row['MENGE']:,.0f} kg here + {split['MENGE']:,.0f} kg from "
-                   f"{split['LIFNR']} at Rp{split['NETPR']:,}{moq}")
+                   f"{split['LIFNR']} at {per_kg(split['NETPR'])}{moq}")
     return out
 
 
@@ -129,22 +165,17 @@ def table_view(case: dict[str, Any]) -> list[dict[str, Any]]:
     return [row_view(r) for r in shown]
 
 
-MD_COLUMNS = ("Rank", "Supplier", "Expected cost (Rp juta)", "Notes")   # A3: 4 columns
+MD_COLUMNS = ("Rank", "Supplier", "Expected cost", "Notes")   # A3: 4 columns
 MD_SIMULATED = "All numbers simulated."
 MD_MAX_BYTES = 3_000   # top-level TABLE_MD
 PLAN_MD_MAX_BYTES = 1_000
 
 
-def juta(amount: int | float) -> str:
-    """An IDR amount in Rp juta with one decimal: 178921875 -> "178.9"."""
-    return f"{amount / 1_000_000:,.1f}"
-
-
 def notes(row: dict[str, Any]) -> str:
-    """The Notes column: price per kg, lead days, then the marks ("Rp17,550/kg, 3 d, fastest")."""
+    """The Notes column: price per kg, lead days, then the marks ("Rp 17,550/kg, 3 d, fastest")."""
     marks_text = short_marks(row)
-    return f"Rp{row['NETPR']:,}/kg, {row['LEAD_DAYS']} d" + ("" if marks_text == "-"
-                                                            else f", {marks_text}")
+    return f"{per_kg(row['NETPR'])}, {row['LEAD_DAYS']} d" + ("" if marks_text == "-"
+                                                             else f", {marks_text}")
 
 
 def short_marks(row: dict[str, Any]) -> str:
@@ -184,13 +215,13 @@ def table_md(case: dict[str, Any], short: bool = False, explanation: bool = True
     for r in shown:
         supplier = (f"keep PO {r['KEEP_EBELN']} ({r['LIFNR']})"
                     if r["OPTION"] == supplier_score.OPTION_KEEP else r["LIFNR"])
-        lines.append(f"| {r['RANK']} | {supplier} | {juta(r['EXPECTED_COST'])} | {notes(r)} |")
+        lines.append(f"| {r['RANK']} | {supplier} | {money(r['EXPECTED_COST'])} | {notes(r)} |")
     if not shown:
         lines.append("| - | no candidate supplier | - | - |")
     lines += ["", MD_SIMULATED]
     text = case.get("EXPLANATION")
     if explanation and text:
-        lines += ["", f"**Why:** {text}"]
+        lines += ["", f"**Why:** {chat_amounts(text)}"]
     return "\n".join(lines)
 
 
@@ -202,7 +233,7 @@ def _case_heading(case: dict[str, Any]) -> str:
 def tables_md(cases: list[dict[str, Any]]) -> str:
     """Every case's TABLE_MD under a heading per PO, kept under MD_MAX_BYTES (B5): full rows
     with the explanations first; then short rows; then explanations left out from the last
-    case backwards; then the cases that do not fit are named."""
+    case backwards; then the cases that do not fit are counted."""
     def build(short: bool, explained: int) -> str:
         return "\n\n".join(f"{_case_heading(c)}\n\n{table_md(c, short, i < explained)}"
                            for i, c in enumerate(cases))
@@ -215,12 +246,18 @@ def tables_md(cases: list[dict[str, Any]]) -> str:
     parts: list[str] = []
     for i, case in enumerate(cases):
         part = f"{_case_heading(case)}\n\n{table_md(case, True, False)}"
-        more = f"\n\n{n - i} more cases in CASES."
+        more = f"\n\n{more_cases(n - i)}"
         if len("\n\n".join(parts + [part]).encode()) + len(more) > MD_MAX_BYTES:
             parts.append(more.strip())
             break
         parts.append(part)
     return "\n\n".join(parts)
+
+
+def more_cases(count: int) -> str:
+    """The cases left out of a chat answer, without naming a JSON field."""
+    return (f"{count} more flagged {'PO is' if count == 1 else 'POs are'} not shown; run each "
+            "scenario on its own to see them.")
 
 
 def excluded_view(case: dict[str, Any]) -> list[dict[str, Any]]:
@@ -272,30 +309,53 @@ def plan_view(plan: dict[str, Any]) -> dict[str, Any]:
             "CASE_OUTCOMES": plan["CASES"], "TOTAL_SECONDS": plan.get("TOTAL_SECONDS")}
 
 
+STEP_WORDS = {"NOT_RUN": "skipped: nothing to change"}   # plan STATUS in chat words
+EVALUATION_LINE = "Evaluation and Learning: offline (Monte Carlo simulation)."
+# Why the supervisor stopped, by stop code (agents.supervisor STOP_*), in plain words.
+OUTCOME_WORDS = {
+    "NOTHING_FLAGGED": "no open PO is at risk, so nothing was changed.",
+    "KEEP_EVERYWHERE": "the current order is already the best option, so nothing was changed "
+                       "and no PO was drafted.",
+    "NOTHING_TO_DRAFT": "no new order beats the current one, so nothing was drafted.",
+    "OVERRIDE_REJECTED": "the buyer's choice was not accepted, so nothing was drafted.",
+}
+
+
+def outcome_text(outcome: dict[str, Any]) -> str:
+    """The plan's stop rule in plain words; the code's own TEXT stays in PLAN."""
+    words = OUTCOME_WORDS.get(outcome.get("CODE", ""))
+    if words is None:
+        to = outcome.get("HANDED_BACK_TO") or []
+        words = ("handed back to the " + " and the ".join(to)
+                 + "; GESIT does not wait for an approval." if to
+                 else "nothing waits for a person.")
+    return _upper_first(words)
+
+
 def plan_md(plan: dict[str, Any]) -> str:
-    """B3: the supervisor's steps for the chat: agent, status, seconds, SAP-RPT called or
-    cached, model texts; under PLAN_MD_MAX_BYTES."""
+    """B3: the outcome and the offline Evaluation and Learning line, then the agents at work
+    last (plan id, Strands Graph, total seconds, each step's status and seconds); under
+    PLAN_MD_MAX_BYTES."""
+    head = []
+    outcome = plan.get("OUTCOME")
+    if outcome:
+        head.append(f"**Outcome:** {outcome_text(outcome)}")
+    head.append(EVALUATION_LINE)
     total = plan.get("TOTAL_SECONDS")
-    blocks = [f"**Agents at work** (supervisor plan {plan['PLAN_ID'] or '-'}, Strands Graph"
+    agents = [f"**Agents at work** (supervisor plan {plan['PLAN_ID'] or '-'}, Strands Graph"
               + (f", {total:.1f} s" if total is not None else "") + ")"]
     items = []
     for s in plan["STEPS"]:
-        bits = [s["STATUS"] + (f" in {s['SECONDS']:.1f} s" if s["SECONDS"] is not None else "")]
-        if s.get("SAP_RPT"):
-            bits.append(s["SAP_RPT"])
-        texts = sum(1 for c in s.get("CALLS", []) if c["KIND"] == "GEN_AI_HUB")
-        if texts:
-            bits.append(f"{texts} model text{'s' if texts != 1 else ''}")
-        items.append(f"- Step {s['NO']}, {s['AGENT']}: {', '.join(bits)}")
-    blocks.append("\n".join(items))   # a list after a blank line, so the chat keeps the lines
-    blocks.append("Evaluation and Learning: offline (Monte Carlo, eval/monte_carlo.py).")
-    outcome = plan.get("OUTCOME")
-    if outcome:
-        blocks.append(f"Stop: {outcome['TEXT']}")
-    text = "\n\n".join(blocks)
-    while len(text.encode()) >= PLAN_MD_MAX_BYTES and len(blocks) > 2:
-        blocks.pop()
-        text = "\n\n".join(blocks)
+        status = STEP_WORDS.get(s["STATUS"])
+        if status is None:
+            status = s["STATUS"] + (f" in {s['SECONDS']:.1f} s" if s["SECONDS"] is not None
+                                    else "")
+        items.append(f"- Step {s['NO']}, {s['AGENT']}: {status}")
+    agents.append("\n".join(items))   # a list after a blank line, so the chat keeps the lines
+    text = "\n\n".join(head + agents)
+    while len(text.encode()) >= PLAN_MD_MAX_BYTES and head:
+        head.pop()
+        text = "\n\n".join(head + agents)
     return text
 
 
@@ -322,12 +382,12 @@ BASELINE_WORDS = (("IS_CHEAPEST", "lowest-price supplier"), ("IS_FASTEST", "fast
 
 
 def versus_phrase(row: dict[str, Any], best: dict[str, Any], name: str) -> str:
-    """"the lowest-price supplier, 100105, has an expected cost Rp75,829,526 higher
+    """"the lowest-price supplier, 100105, has an expected cost Rp 75.8 juta higher
     (simulated), mainly from its delay risk"; the gap and the driver come from
     `supplier_score.compare_to_best`, never recomputed here."""
     diff = supplier_score.compare_to_best(row, best)
     text = (f"the {name}, {row['LIFNR']}, has an expected cost "
-            f"Rp{diff['EXPECTED_COST_GAP']:,} higher (simulated)")
+            f"{money(diff['EXPECTED_COST_GAP'])} higher (simulated)")
     driver = DRIVER_WORDS.get(diff["MAIN_DRIVER"])
     return text + (f", mainly from {driver}" if driver else "")
 
@@ -366,10 +426,23 @@ def no_backup_sentence(case: dict[str, Any]) -> str | None:
     return "No backup supplier can take the order: " + (", ".join(parts) or "none quoted") + "."
 
 
-def _next_step(case_ebeln: str, actions: dict[str, Any] | None, inline: bool = False) -> str:
+KEEP_NEXT = "nothing was changed and no PO was drafted"
+NO_DRAFT_NEXT = "nothing was drafted, the buyer decides"
+KEEP_BUYER_SENTENCE = ("If the buyer still wants a new supplier, they can override the "
+                       "recommendation with a written justification of at least 20 characters.")
+
+
+def is_keep(case: dict[str, Any]) -> bool:
+    """The current PO ranks #1 for this case (nothing to draft, FR-ACT-1)."""
+    rows = case["SCORING"]["CANDIDATES"]
+    return bool(rows) and rows[0]["OPTION"] == supplier_score.OPTION_KEEP
+
+
+def _next_step(case_ebeln: str, actions: dict[str, Any] | None, inline: bool = True,
+               keep: bool = False) -> str:
     case = next((c for c in (actions or {}).get("CASES", []) if c["EBELN"] == case_ebeln), None)
     if case is None or not case["ORDERS"]:
-        return "nothing was drafted, the buyer decides"
+        return KEEP_NEXT if keep else NO_DRAFT_NEXT
     orders = case["ORDERS"]
     names = _and([f"PO {o['EBELN']} at {rp(o['NETWR'])}" for o in orders if o["EBELN"]] or ["-"])
     nexts = {o["NEXT"] for o in orders}
@@ -385,8 +458,8 @@ def _next_step(case_ebeln: str, actions: dict[str, Any] | None, inline: bool = F
 
 
 def next_step_sentence(case_ebeln: str, actions: dict[str, Any] | None) -> str:
-    """What happens next for one case, as one sentence."""
-    return _upper_first(_next_step(case_ebeln, actions)) + "."
+    """What happens next for one case, as one sentence (superseded drafts said apart)."""
+    return _upper_first(_next_step(case_ebeln, actions, inline=False)) + "."
 
 
 def supersede_sentences(actions: dict[str, Any] | None, case_ebeln: str | None = None) -> list[str]:
@@ -429,33 +502,54 @@ def run_next_steps(evaluation: dict[str, Any] | None, actions: dict[str, Any] | 
 
 def run_summary(report: dict[str, Any] | None, evaluation: dict[str, Any] | None,
                 actions: dict[str, Any] | None) -> str:
-    """The recommendation, cheapest and fastest, what happens next (without NEXT_STEPS)."""
+    """Two or three sentences, summary first: the recommendation, how it compares with the
+    cheapest and the fastest, what happens next (without NEXT_STEPS). When the current PO
+    ranks #1: it is already the best, nothing changed, what the buyer can do."""
     if report is None:
-        return "The run did not finish. See PLAN for the step that failed."
+        return ("The run did not finish, so nothing was changed. Try the same scenario again, "
+                "or ask whether GESIT is ready.")
     if not report["FLAGGED_EBELN"]:
         return (f"Detection checked {len(report['OPEN_POS'])} open POs and flagged none. "
-                "No action is needed.")
+                "No action is needed, nothing was changed.")
     cases = (evaluation or {}).get("CASES", [])
     if not cases:
-        return "Detection flagged a PO, but no case was ranked. See PLAN."
+        return ("A PO was flagged, but no case could be ranked, so nothing was changed. Try the "
+                "same scenario again.")
     if len(cases) == 1:
         case = cases[0]
         reasons = ", ".join(REASON_LABELS.get(c, c) for c in case["REASON_CODES"])
+        if is_keep(case):   # C1, C2: without a new order to choose, say why instead
+            return " ".join([keep_sentence(case, reasons), _upper_first(KEEP_NEXT) + ".",
+                             no_backup_sentence(case) or KEEP_BUYER_SENTENCE])
         rec = _recommendation(case, gerund=True)
         sentences = [f"For PO {case['EBELN']} ({reasons}), GESIT recommends {rec}."
                      if case["SCORING"]["CANDIDATES"] else f"For PO {case['EBELN']} "
                      f"({reasons}), {rec}.",
                      _comparison(case) or no_backup_sentence(case),
-                     next_step_sentence(case["EBELN"], actions),
-                     *supersede_sentences(actions, case["EBELN"])]
+                     _upper_first(_next_step(case["EBELN"], actions)) + "."]
         return " ".join(s for s in sentences if s)
     shown = cases[:3] if len(cases) <= 3 else cases[:2]
     sentences = [f"PO {c['EBELN']}: {_recommendation(c)}; "
-                 f"{_next_step(c['EBELN'], actions, inline=True)}." for c in shown]
+                 f"{_next_step(c['EBELN'], actions, keep=is_keep(c))}." for c in shown]
     rest = len(cases) - len(shown)
     if rest:
-        sentences.append(f"{rest} more cases are in CASES.")
+        sentences.append(more_cases(rest))
     return " ".join(sentences)
+
+
+def keep_sentence(case: dict[str, Any], reasons: str) -> str:
+    """The Stop case: "For PO X (price revision), the current order is already the best
+    option: keeping it has an expected cost of Rp 149.6 juta (simulated), Rp 17.6 juta
+    (simulated) less than the best new order, from 100102." (gap from compare_to_best)."""
+    rows = case["SCORING"]["CANDIDATES"]
+    keep = rows[0]
+    text = (f"For PO {case['EBELN']} ({reasons}), the current order is already the best option: "
+            f"keeping it has an expected cost of {rp(keep['EXPECTED_COST'])}")
+    new = next((r for r in rows if r["OPTION"] == supplier_score.OPTION_NEW_PO), None)
+    if new is not None:
+        gap = supplier_score.compare_to_best(new, keep)["EXPECTED_COST_GAP"]
+        text += f", {rp(gap)} less than the best new order, from {new['LIFNR']}"
+    return text + "."
 
 
 def run_response(supervisor: Any) -> dict[str, Any]:
@@ -501,18 +595,74 @@ def pending_next_steps(pending: list[dict[str, Any]]) -> str:
 
 
 POLICY_WORDS = {   # the rule in words; the full reason stays in POLICY_DECISION
-    "POL-1": "only role manager decides a PO above the approval threshold",
+    "POL-1": (f"only the procurement manager decides a PO above the approval threshold of "
+              f"{rp(APPROVAL_THRESHOLD_IDR)}"),
     "POL-2": "the supplier is not on the approved panel",
-    "POL-3": "that tool is not on the permitted list",
+    "POL-3": "that action is not on the permitted list",
     "POL-4": "an agent never approves or rejects a PO",
+}
+POLICY_NEXT = {   # what to do next after a policy denial, one sentence
+    "POL-1": "Ask the procurement manager to approve or reject it.",
+    "POL-2": "Run the scenario again and choose a supplier on the approved panel.",
+    "POL-3": "Use one of the actions GESIT offers instead.",
+    "POL-4": "A person approves or rejects it: the buyer within policy, or the manager.",
 }
 
 
 def deny_summary(verb: str, principal: Any, decision: dict[str, Any], ebeln: str,
                  status: str) -> str:
+    """A policy denial: what happened (nothing changed), then what to do next."""
     rule = POLICY_WORDS.get(decision["POLICY"], "policy")
-    return (f"{verb} by {principal.id} ({principal.role}) denied by {decision['POLICY']}: "
-            f"{rule}. PO {ebeln} stays {status}.")
+    return (f"{verb} by {principal.id} ({principal.role}) was denied by {decision['POLICY']}: "
+            f"{rule}, so nothing changed and PO {ebeln} stays {status}. "
+            + POLICY_NEXT.get(decision["POLICY"], "Ask for the pending approvals."))
+
+
+def not_found_summary(ebeln: str, verb: str) -> str:
+    """404: a PO number GESIT did not draft."""
+    return (f"PO {ebeln} was not created by GESIT, so GESIT cannot {verb} it; nothing changed. "
+            "Ask for the pending approvals to see the POs GESIT drafted.")
+
+
+def wrong_status_summary(po: dict[str, Any], verb: str) -> str:
+    """409: a PO in a status that cannot be approved or rejected now (`verb` "approved" or
+    "rejected"); nothing changed. A superseded draft names its successor."""
+    ebeln, status = po["EBELN"], po["STATUS"]
+    if status == "SUPERSEDED":
+        by = _and(po.get("SUPERSEDED_BY") or ["-"])
+        return (f"PO {ebeln} is SUPERSEDED by draft PO {by} and can never be released, so it "
+                f"cannot be {verb}; nothing changed. Approve or reject PO {by} instead.")
+    if status == "DRAFT":
+        return (f"PO {ebeln} is a DRAFT within policy that waits for the buyer's one-click "
+                f"approval, so the manager has nothing to reject; nothing changed. The buyer "
+                "can approve it, or a new run replaces it.")
+    already = {"RELEASED": "already released", "REJECTED": "already rejected"}
+    return (f"PO {ebeln} is {already.get(status, status)}, so it cannot be {verb} now; nothing "
+            "changed. Ask for the pending approvals to see the POs that still wait.")
+
+
+def wrong_status_next_steps(po: dict[str, Any]) -> str:
+    by = po.get("SUPERSEDED_BY") or []
+    if po["STATUS"] == "SUPERSEDED" and by:
+        return say(approve_phrase(by[0]), reject_phrase(by[0]))
+    if po["STATUS"] == "DRAFT":
+        return say(approve_phrase(po["EBELN"], as_buyer=True), PENDING_PHRASE)
+    return say(PENDING_PHRASE)
+
+
+def scenario_question(received: str | None) -> str:
+    """B1: a missing or unknown scenario; nothing was run; the question back."""
+    text = (received or "").strip()
+    what = (f"Scenario {quoted(text)} is not one GESIT knows" if text
+            else "No scenario was given")
+    return f"{what}, so nothing was run. {WHICH_SCENARIO}"
+
+
+def override_refused_summary(choose: str, options: list[str]) -> str:
+    """An override to an option that is not in the ranked table (FR-INT-1)."""
+    return (f"{quoted(choose)} is not one of the ranked options ({', '.join(options)}), so "
+            "nothing changed and no draft PO was created. Choose one of the ranked options in "
+            "the table and try again.")
 
 
 def deny_next_steps(decision: dict[str, Any], ebeln: str) -> str:
@@ -554,10 +704,12 @@ def reject_next_steps(po: dict[str, Any], option: dict[str, Any] | None,
     return say(run_phrase(sid), PENDING_PHRASE)
 
 
-def short_reason_summary(what: str, text: str, chars: int, minimum: int, tail: str) -> str:
-    """A1: 'Reason "too high" has 8 characters, at least 20 are needed. ...'"""
+def short_reason_summary(what: str, text: str, chars: int, minimum: int, unchanged: str,
+                         again: str) -> str:
+    """A1: 'Reason "too high" has 8 characters, at least 20 are needed, so nothing changed and
+    PO X stays PENDING_APPROVAL. Send the rejection again with a longer reason.'"""
     return (f"{what} {quoted(text)} has {chars} character{'s' if chars != 1 else ''}, "
-            f"at least {minimum} are needed. {tail}")
+            f"at least {minimum} are needed, so nothing changed and {unchanged}. {again}")
 
 
 # --------------------------------------------------------------------- integrity
@@ -618,14 +770,14 @@ def integrity_md(flags: dict[str, Any], overrides: list[dict[str, Any]]) -> str:
         lines.append("| - | no pair meets the rule | - | - |")
     lines += ["", f"Pairs tested: {flags['PAIRS_TESTED']}. Flags are for review, never a block."]
     if overrides:
-        lines += ["", "| Override | Buyer, PO | Choice and justification | Extra cost (Rp juta) |",
+        lines += ["", "| Override | Buyer, PO | Choice and justification | Extra cost |",
                   "|---|---|---|---|"]
         for o in overrides:
             text = o["JUSTIFICATION"]
             text = text if len(text) <= 60 else text[:57] + "..."
             lines.append(f"| {o['OVERRIDE_ID']} | {o['BUYER']}, {o['EBELN']} | {o['CHOSEN']} "
                          f"instead of {o['RECOMMENDED']}: \"{text.replace('|', '/')}\" | "
-                         f"{juta(o['COST_DIFFERENCE'])} |")
+                         f"{money(o['COST_DIFFERENCE'])} |")
     lines += ["", MD_SIMULATED]
     return "\n".join(lines)
 
@@ -648,8 +800,9 @@ def override_summary(*, choice: dict[str, Any] | None, record: dict[str, Any] | 
     if record is not None:
         sentences = [f"Override {record['OVERRIDE_ID']} logged: {record['CHOSEN']} instead of "
                      f"the recommended {record['RECOMMENDED']}.",
-                     f"{record['CHOSEN']} has an expected cost Rp{record['COST_DIFFERENCE']:,} "
-                     f"higher than the recommended {record['RECOMMENDED']} (simulated).",
+                     f"{record['CHOSEN']} has an expected cost "
+                     f"{rp(record['COST_DIFFERENCE'])} higher than the recommended "
+                     f"{record['RECOMMENDED']}.",
                      f"Justification recorded: {quoted(justification)}."]
     else:
         sentences = [f"{chosen} is the recommended option, so no justification was needed and "
@@ -687,7 +840,7 @@ ABOUT_EQUAL_SHARE = 0.03   # a mean gap within 3% of the baseline's cost reads "
 
 
 def juta_sim(amount_juta: float) -> str:
-    return f"Rp{amount_juta:,.1f} juta (simulated)"
+    return f"{money_juta(amount_juta)} (simulated)"
 
 
 def evaluation_summary(data: dict[str, Any]) -> str:
@@ -729,15 +882,15 @@ def evaluation_md(data: dict[str, Any]) -> str:
     tracked = data["TRACKED_TOTAL_JUTA"]
     vs = data["WORLDS"]["VERSUS"]["GESIT_LEARNING"]
     n = data["WORLDS"]["COUNT"]
-    lines = ["| Strategy | Tracked total (Rp juta) | GESIT with learning cheaper in | Mean gap "
-             "(Rp juta) |", "|---|---|---|---|"]
+    lines = ["| Strategy | Tracked total | GESIT with learning cheaper in | Mean gap |",
+             "|---|---|---|---|"]
     for key, name in EVAL_NAMES.items():
         v = vs.get(key)
         # GESIT with learning is the row the others are compared against, not missing data
         counts = (f"{v['CHEAPER_IN']} of {n} worlds, equal in {v['EQUAL_IN']}" if v
                   else "baseline (compared against)")
-        gap = (f"{v['MEAN_DIFF_JUTA']:+,.1f}" if v else "0.0")
-        lines.append(f"| {name} | {tracked[key]:,.1f} | {counts} | {gap} |")
+        gap = signed_money_juta(v["MEAN_DIFF_JUTA"]) if v else money_juta(0)
+        lines.append(f"| {name} | {money_juta(tracked[key])} | {counts} | {gap} |")
     lines += ["", "Mean gap = GESIT with learning minus the strategy, averaged over the worlds; "
                   "negative means GESIT costs less.", MD_SIMULATED]
     return "\n".join(lines)

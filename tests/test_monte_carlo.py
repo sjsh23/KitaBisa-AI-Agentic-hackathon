@@ -231,3 +231,15 @@ def test_only_eval_uses_the_world_and_the_truth():
                 if imports.search(line) or ("_truth" in line and not guard.search(line)):
                     hits.append(f"{path.relative_to(ROOT)}:{n}")
     assert hits == []
+
+
+def test_moq_extra_kg_is_not_stock_out_weight():
+    """The kg a MOQ round-up adds (MOQ_EXTRA_KG) are purchase cost only: each part is weighted
+    by the kg it covers of the need (FR-EVA-4, proposal item 12)."""
+    row = {"LIFNR": "100109", "MENGE": 2_500.0, "MOQ_EXTRA_KG": 0.0, "ARRIVAL": "2026-10-03",
+           "SPLIT_WITH": {"LIFNR": "100102", "MENGE": 5_000.0, "MOQ_EXTRA_KG": 300.0,
+                          "ARRIVAL": "2026-10-03"}}
+    parts = mc.parts_of(row)
+    assert [p.menge for p in parts] == [2_500.0, 4_700.0]   # sums to the 7,200 kg needed
+    delays = {("100109", "2026-10-03"): 0, ("100102", "2026-10-03"): 6}   # 100102 3 days late
+    assert mc.realised_stockout_days(parts, delays, "2026-10-06") == 3 * 4_700 / 7_200

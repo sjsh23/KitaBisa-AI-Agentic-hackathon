@@ -47,7 +47,8 @@ promised date d gets one draw from a generator seeded with (seed, r, LIFNR, d), 
 every strategy and case that orders from it on that date.
 
 Realised stock-out days of an order mix = quantity-weighted average over its parts of
-max(0, real arrival - stock-out date), real arrival = promised date + sampled delay
+max(0, real arrival - stock-out date), each part weighted by the kg it covers of the need
+(the extra kg of a MOQ round-up is purchase cost only), real arrival = promised date + sampled delay
 (today + LEAD_DAYS for a new order; the expected arrival from Detection for keeping the
 PO: S1 the delay notice's date, S3 the remainder's date, S2 the PO date). Short shipments
 (the received quantity) are not counted.
@@ -104,7 +105,9 @@ Z_95 = 1.96   # normal approximation for the 95% interval of a mean paired diffe
 DRIFT_SUPPLIER, DRIFT_SPLIT_DATE = "100108", "2026-03-01"
 
 STOCKOUT_DEFINITION = ("realised stock-out days = quantity-weighted average over the parts of "
-                       "an order of max(0, real arrival - stock-out date); real arrival = "
+                       "an order of max(0, real arrival - stock-out date), weighted by the kg "
+                       "each part covers of the need (a MOQ round-up is purchase cost only); "
+                       "real arrival = "
                        "promised date + delay drawn from the simulated world's true behaviour")
 # The baselines read from the LEARNING ranked table carry this suffix (--baseline-table).
 SAME_SUFFIX = "@LEARNING_TABLE"
@@ -227,12 +230,19 @@ def blend_switch(on: bool) -> Iterator[None]:
             os.environ["GESIT_RELIABILITY_BLEND"] = before
 
 
+def needed_kg(part: dict[str, Any]) -> float:
+    """The kg of a part that cover the need: MENGE minus the MOQ round-up (MOQ_EXTRA_KG). The
+    extra kg from MINBM is purchase cost only, never stock-out weight (proposal item 12)."""
+    return float(part["MENGE"]) - float(part.get("MOQ_EXTRA_KG") or 0.0)
+
+
 def parts_of(row: dict[str, Any]) -> tuple[Part, ...]:
-    """The parts a ranked row orders: one supplier, or the two of a split order."""
-    parts = [Part(row["LIFNR"], float(row["MENGE"]), row["ARRIVAL"])]
+    """The parts a ranked row orders: one supplier, or the two of a split order, each weighted
+    by the kg it covers of the need (`needed_kg`)."""
+    parts = [Part(row["LIFNR"], needed_kg(row), row["ARRIVAL"])]
     if row.get("SPLIT_WITH"):
         split = row["SPLIT_WITH"]
-        parts.append(Part(split["LIFNR"], float(split["MENGE"]), split["ARRIVAL"]))
+        parts.append(Part(split["LIFNR"], needed_kg(split), split["ARRIVAL"]))
     return tuple(parts)
 
 

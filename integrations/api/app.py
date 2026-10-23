@@ -45,7 +45,8 @@ from policy import Principal
 from tools import get_integrity_flags, list_pending_approvals, reject_po
 from integrations.sap.rpt_client import prediction_cache_size
 from tools.integrity_tools import (JAKARTA, MIN_JUSTIFICATION_CHARS, check_override,
-                                   clear_decision_log, read_overrides, recommended_label)
+                                   clear_decision_log, find_option, option_label, read_overrides,
+                                   recommended_label)
 
 from integrations.api import responses as views
 from integrations.api import warmup
@@ -70,7 +71,7 @@ def scenario_or_ask(body: RunBody) -> str:
     """B1: a missing or unknown scenario is a question back to the user (422), never a guess."""
     value = (body.scenario or "").strip().upper()
     if value not in SCENARIOS:
-        raise _summary_error(422, views.WHICH_SCENARIO,
+        raise _summary_error(422, views.scenario_question(body.scenario),
                              views.say(views.run_phrase("S1"), views.RUN_ALL_PHRASE))
     return value
 
@@ -125,9 +126,17 @@ def create_app(load_env: bool = True, warm_up: bool | None = None) -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     def invalid_body(_: Request, exc: RequestValidationError) -> JSONResponse:
+        fields = {str(e["loc"][-1]) for e in exc.errors() if e.get("loc")}
+        if "scenario" in fields:   # an override names one scenario: S1, S2 or S3
+            body = views.with_next("The scenario is not S1, S2 or S3, so nothing changed. "
+                                   "Which scenario: S1, S2 or S3?",
+                                   views.say(views.run_phrase("S1")))
+            return JSONResponse(body, status_code=422)
         problems = "; ".join(f"{'.'.join(str(p) for p in e['loc'][1:])}: {e['msg']}"
                              for e in exc.errors())
-        return JSONResponse({"SUMMARY": f"Invalid request: {problems}."}, status_code=422)
+        return JSONResponse({"SUMMARY": f"The request could not be read ({problems}), so "
+                             "nothing changed. Check the values and try again."},
+                            status_code=422)
 
     started_at = datetime.now(JAKARTA).isoformat(timespec="seconds")
     started = time.perf_counter()
@@ -214,8 +223,10 @@ def create_app(load_env: bool = True, warm_up: bool | None = None) -> FastAPI:
                 jobs[job_id] = {"status": "done",
                                 **views.run_response(run_supervisor(scenario, body.llm))}
             except Exception as exc:   # reported to the caller, never raised in the thread
-                jobs[job_id] = {"status": "failed", "SUMMARY": f"The run failed: "
-                                f"{type(exc).__name__}: {exc}"}
+                jobs[job_id] = {"status": "failed",
+                                "SUMMARY": "The run did not finish, so nothing was changed. "
+                                           "Try the same scenario again.",
+                                "ERROR": f"{type(exc).__name__}: {exc}"}
 
         threading.Thread(target=work, name=f"gesit-run-{job_id}", daemon=True).start()
         return {"job_id": job_id, "status": "running",
@@ -250,9 +261,11 @@ def create_app(load_env: bool = True, warm_up: bool | None = None) -> FastAPI:
                     principal = Principal(body.actor, body.role)
                 result = approvals.approve_po(pos, ebeln, principal)
             except KeyError:
-                raise _summary_error(404, f"PO {ebeln} was not created by GESIT.")
-            except ValueError as exc:
-                raise _summary_error(409, str(exc))
+                raise _summary_error(404, views.not_found_summary(ebeln, "approve"))
+            except ValueError:
+                po = pos.get(ebeln)
+                raise _summary_error(409, views.wrong_status_summary(po, "approved"),
+                                     views.wrong_status_next_steps(po))
         if result["RESULT"] != "RELEASED":
             decision = result["POLICY_DECISION"]
             raise _summary_error(403, views.deny_summary("Approve", principal, decision, ebeln,
@@ -273,9 +286,11 @@ def create_app(load_env: bool = True, warm_up: bool | None = None) -> FastAPI:
             try:
                 result = reject_po(ebeln, body.reason, store=pos, principal=principal)
             except KeyError:
-                raise _summary_error(404, f"PO {ebeln} was not created by GESIT.")
-            except ValueError as exc:
-                raise _summary_error(409, str(exc))
+                raise _summary_error(404, views.not_found_summary(ebeln, "reject"))
+            except ValueError:
+                po = pos.get(ebeln)
+                raise _summary_error(409, views.wrong_status_summary(po, "rejected"),
+                                     views.wrong_status_next_steps(po))
         decision = result["POLICY_DECISION"]
         if result["RESULT"] == "DENIED":
             raise _summary_error(403, views.deny_summary("Reject", principal, decision, ebeln,
@@ -284,7 +299,9 @@ def create_app(load_env: bool = True, warm_up: bool | None = None) -> FastAPI:
         if result["RESULT"] == "REFUSED":   # A1: quote what was received, exactly
             raise _summary_error(422, views.short_reason_summary(
                 "Reason", body.reason, result["REASON_CHARS"], MIN_JUSTIFICATION_CHARS,
-                f"Nothing changed, PO {ebeln} stays {result['STATUS']}."),
+                f"PO {ebeln} stays {result['STATUS']}",
+                f"Send the rejection again with a reason of at least "
+                f"{MIN_JUSTIFICATION_CHARS} characters."),
                 views.say(views.reject_phrase(ebeln)), REASON_CHARS=result["REASON_CHARS"])
         po = pos.get(ebeln)
         option = result["NEXT_OPTION"]
@@ -306,15 +323,19 @@ def create_app(load_env: bool = True, warm_up: bool | None = None) -> FastAPI:
         cases = (run.evaluation or {}).get("CASES", [])
         case = cases[0] if cases else None
         if outcome.get("CODE") == sup.STOP_OVERRIDE_REJECTED:
-            reason = next((line.strip() for line in run.choice["LINES"]
-                           if line.strip().startswith("Rejected")), outcome["TEXT"])
+            # Not a ranked option, or a ranked one with too short a justification (A1).
+            reason = views.override_refused_summary(
+                body.choose, [option_label(r) for r in case["SCORING"]["CANDIDATES"]])
             check = check_override(recommended_label(case) or "", run.choice["CHOSEN"],
                                    body.justification)
-            if check["OVERRIDE"] and check["JUSTIFICATION_CHARS"] is not None and \
-                    check["JUSTIFICATION_CHARS"] < MIN_JUSTIFICATION_CHARS:   # A1
+            if find_option(case, run.choice["CHOSEN"]) is not None and check["OVERRIDE"] and \
+                    check["JUSTIFICATION_CHARS"] is not None and \
+                    check["JUSTIFICATION_CHARS"] < MIN_JUSTIFICATION_CHARS:
                 reason = views.short_reason_summary(
                     "Justification", body.justification, check["JUSTIFICATION_CHARS"],
-                    MIN_JUSTIFICATION_CHARS, "No draft PO was created.")
+                    MIN_JUSTIFICATION_CHARS, "no draft PO was created",
+                    f"Send the override again with a justification of at least "
+                    f"{MIN_JUSTIFICATION_CHARS} characters.")
             raise _summary_error(422, reason,
                                  views.say(views.override_phrase(body.scenario, body.choose)),
                                  REASON=reason, CHOSEN=run.choice["CHOSEN"])

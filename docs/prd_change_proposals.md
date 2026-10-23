@@ -571,6 +571,39 @@ superseded draft can never be released."
   committed) whenever the data, the scoring or the agents change.
 - **After a reject** the SUMMARY ends with the override phrase for the next option.
 
+## 17. Polish before the freeze: chat wording and the MOQ weight in the Monte Carlo (FR-EVA-4, D-3, items 12, 15, 16)
+
+**Status:** built, waiting for team agreement (23 Oct 2026). `integrations/api/`,
+`eval/monte_carlo.py`, `integrations/api/evaluation_summary.json`. No scoring rule, no
+policy (POL-1 to POL-4) and no Joule file changed.
+
+- **Monte Carlo, MOQ weight (amends item 12).** The realised stock-out days of an order mix
+  weight each part by the kg it covers of the need (MENGE minus MOQ_EXTRA_KG); the extra kg
+  of a MOQ round-up stays purchase cost only. Before, a 2,500 + 5,000 kg split with MOQ +300
+  kg weighted 7,500 kg instead of 7,200. Seed 42, 1,000 runs, 11 worlds, real SAP-RPT
+  (simulated): only always-cheapest moved, in one world (11-world mean Rp 532.5 to 532.7
+  juta; GESIT with learning against it -64.9 to -65.1 juta, still cheaper in 9 of 11); every
+  tracked total, every GESIT count and the gap against always-fastest (+8.4 juta; 3 cheaper,
+  5 equal, 3 higher) unchanged.
+- **Summary first, short.** A /run SUMMARY is two or three sentences, then NEXT_STEPS; a
+  superseded draft is named inside the next-step sentence. Joule shows SUMMARY, TABLE_MD,
+  PLAN_MD in that order; PLAN_MD gives the outcome and the offline Evaluation and Learning
+  line ("Monte Carlo simulation"), then "Agents at work" last (plan id, Strands Graph, total
+  seconds, each step's status and seconds; NOT_RUN reads "skipped: nothing to change"). No
+  SAP-RPT cache state, model text count, file name or JSON field name in chat text.
+- **One money format.** Every amount in chat text reads "Rp 178.4 juta" (summary, tables,
+  plan, GET /evaluation, integrity), a price "Rp 17,550/kg"; the checked explanation is shown
+  with its amounts in the same format (it is checked on the exact numbers first).
+- **Stop case.** When keeping the PO ranks #1: "the current order is already the best
+  option", its expected cost and the gap to the best new order, "Nothing was changed and no
+  PO was drafted.", and one sentence on what the buyer can do (override with a written
+  justification); without any new order, why none is possible.
+- **Refusals and errors.** One sentence for what happened (with "nothing changed" where
+  true, user text quoted as received), one for what to do next: short reason or
+  justification, an option that is not ranked, a PO in the wrong status (released, rejected,
+  superseded, a buyer's draft), a PO GESIT did not create, a policy denial (POL-1 names the
+  threshold), a missing or unknown scenario. NEXT_STEPS phrases unchanged.
+
 ## PRD Changelog draft
 
 Lines to add to the Changelog at the end of `PRD.md` once the team agrees:
@@ -585,3 +618,4 @@ Lines to add to the Changelog at the end of `PRD.md` once the team agrees:
 - 2026-10-22: FR-ACT-1: at most one open draft per flagged PO; a new draft supersedes an older DRAFT or PENDING_APPROVAL one, which can never be released (item 14).
 - 2026-10-22: FR-ACT-3, FR-INT-4, section 8: the API quotes user text exactly, ends every SUMMARY with NEXT_STEPS, takes "as": "BUYER" for the buyer's one-click, returns PLAN_MD and GET /integrity, and shows the explanation in TABLE_MD (item 15).
 - 2026-10-22: FR-SEL-4, FR-EVA-4, sections 4 and 12: the explanation says "also the fastest" in its first sentence and rounds percents; the API asks which scenario, adds GET /status and GET /evaluation (from the eval/ summary file, tested against baselines in simulation); RELEASED for every approval (item 16).
+- 2026-10-23: FR-EVA-4: realised stock-out days weight each order part by the kg it covers of the need; a MOQ round-up is purchase cost only. Chat text: summary first, one money format (Rp 178.4 juta), plain Stop and error messages (item 17).

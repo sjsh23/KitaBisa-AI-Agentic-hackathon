@@ -76,7 +76,9 @@ def test_c1_no_backup_can_cover_the_quantity(tmp_path, monkeypatch):
     assert case["CANNOT_COVER"]                                   # ranked by nobody, with reason
     assert "No backup supplier can take the order: " in out["SUMMARY"]
     assert "that cannot cover 10,000 kg, not even as a split" in out["SUMMARY"]
-    assert "nothing was drafted, the buyer decides" in out["SUMMARY"].lower()
+    assert "the current order is already the best option" in out["SUMMARY"]
+    assert "Nothing was changed and no PO was drafted." in out["SUMMARY"]
+    assert "override" not in out["SUMMARY"].split("You can say")[0]   # nothing to choose
 
 
 # ---------------------------------------------------------------------- C2
