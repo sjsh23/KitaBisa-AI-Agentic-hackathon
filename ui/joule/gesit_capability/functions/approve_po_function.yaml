@@ -1,18 +1,31 @@
 parameters:
-  - name: ebeln
+- name: ebeln
 action_groups:
-  - actions:
-      - type: api-request
-        method: POST
-        system_alias: GESIT_API
-        path: "/approvals/<? ebeln ?>/approve"
-        headers:
-          Content-Type: application/json
-        body: >
-          {"as": "MANAGER01"}
-        result_variable: apiResponse
-      - type: message
-        message:
-          type: text
-          markdown: true
-          content: "<? apiResponse.body.SUMMARY ?>"
+- actions:
+  - type: api-request
+    method: POST
+    system_alias: GESIT_API
+    path: /approvals/<? ebeln ?>/approve
+    headers:
+      Content-Type: application/json
+    body: '{"as": "MANAGER01"}
+
+      '
+    result_variable: apiResponse
+  - type: message
+    message:
+      type: text
+      markdown: true
+      content: <? apiResponse.body.SUMMARY ?>
+  - type: message
+    message:
+      type: quickReplies
+      content:
+        title: What next?
+        buttons:
+        - title: Pending approvals
+          value: Show pending approvals
+        - title: Run scenario S3
+          value: Run GESIT on scenario S3
+        - title: Reset demo
+          value: Reset the GESIT demo

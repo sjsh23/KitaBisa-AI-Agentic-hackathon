@@ -1,12 +1,24 @@
 action_groups:
-  - actions:
-      - type: api-request
-        method: GET
-        system_alias: GESIT_API
-        path: /approvals
-        result_variable: apiResponse
-      - type: message
-        message:
-          type: text
-          markdown: true
-          content: "<? apiResponse.body.SUMMARY ?>"
+- actions:
+  - type: api-request
+    method: GET
+    system_alias: GESIT_API
+    path: /approvals
+    result_variable: apiResponse
+  - type: message
+    message:
+      type: text
+      markdown: true
+      content: <? apiResponse.body.SUMMARY ?>
+  - type: message
+    message:
+      type: quickReplies
+      content:
+        title: What next?
+        buttons:
+        - title: Integrity flags
+          value: Show integrity flags
+        - title: Run scenario S1
+          value: Run GESIT on scenario S1
+        - title: Reset demo
+          value: Reset the GESIT demo

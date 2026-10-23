@@ -1,19 +1,32 @@
 parameters:
-  - name: ebeln
-  - name: reason
+- name: ebeln
+- name: reason
 action_groups:
-  - actions:
-      - type: api-request
-        method: POST
-        system_alias: GESIT_API
-        path: "/approvals/<? ebeln ?>/reject"
-        headers:
-          Content-Type: application/json
-        body: >
-          {"as": "MANAGER01", "reason": "<? reason ?>"}
-        result_variable: apiResponse
-      - type: message
-        message:
-          type: text
-          markdown: true
-          content: "<? apiResponse.body.SUMMARY ?>"
+- actions:
+  - type: api-request
+    method: POST
+    system_alias: GESIT_API
+    path: /approvals/<? ebeln ?>/reject
+    headers:
+      Content-Type: application/json
+    body: '{"as": "MANAGER01", "reason": "<? reason ?>"}
+
+      '
+    result_variable: apiResponse
+  - type: message
+    message:
+      type: text
+      markdown: true
+      content: <? apiResponse.body.SUMMARY ?>
+  - type: message
+    message:
+      type: quickReplies
+      content:
+        title: What next?
+        buttons:
+        - title: Pending approvals
+          value: Show pending approvals
+        - title: Integrity flags
+          value: Show integrity flags
+        - title: Reset demo
+          value: Reset the GESIT demo
