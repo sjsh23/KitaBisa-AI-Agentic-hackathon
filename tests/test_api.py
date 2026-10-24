@@ -371,3 +371,50 @@ def test_md_rows_adds_cheapest_and_fastest_with_their_real_rank():
     rows[3]["OPTION"] = "KEEP_CURRENT_PO"   # rank 4
     shown = views.md_rows({"SCORING": {"CANDIDATES": rows}})
     assert [r["RANK"] for r in shown] == [1, 2, 3, 4, 5, 6]
+
+
+@pytest.mark.parametrize("count, text", [
+    (0, ""), (-1, ""), (1, "(1 other option not shown)"), (3, "(3 other options not shown)"),
+])
+def test_not_shown_text_singular_plural_and_empty(count, text):
+    assert views.not_shown_text(count) == text
+
+
+def _fake_case(n: int) -> dict:
+    rows = [{"RANK": i, "OPTION": "NEW_PO", "LIFNR": f"1001{i:02d}", "EXPECTED_COST": 1e8 + i,
+             "NETPR": 17_500, "LEAD_DAYS": 3, "IS_CHEAPEST": i == 1, "IS_FASTEST": i == 1}
+            for i in range(1, n + 1)]
+    return {"SCORING": {"CANDIDATES": rows}, "EXPLANATION": "Supplier 100101 ranks first."}
+
+
+@pytest.mark.parametrize("n, line", [
+    (3, None), (4, "(1 other option not shown)"), (7, "(4 other options not shown)"),
+])
+def test_table_md_counts_the_options_not_shown(n, line):
+    lines = views.table_md(_fake_case(n)).splitlines()
+    rows = [l for l in lines if l.startswith("| ")]
+    assert len(rows) == 4 and all(r.count("|") == 5 for r in rows)   # header + 3 rows, 4 columns
+    hidden = [l for l in lines if l.endswith("not shown)")]
+    if line is None:
+        assert hidden == []
+    else:
+        # right under the table, after a blank line (else Markdown reads it as a row),
+        # before the simulated label and the explanation
+        i = lines.index(line)
+        assert hidden == [line] and lines[i - 1] == "" and lines[i - 2].startswith("| ")
+        assert i < lines.index("All numbers simulated.") < lines.index(
+            "**Why:** Supplier 100101 ranks first.")
+
+
+def test_table_md_not_shown_count_matches_the_ranked_table(client):
+    for scenario in ("S1", "S2", "S3", "all"):
+        data = call(client, "POST", "/run", {"scenario": scenario, "llm": False})
+        for case in data["CASES"]:
+            md = case["TABLE_MD"]
+            shown = sum(1 for l in md.splitlines()[2:] if l.startswith("| "))
+            ranks = [int(l.split("|")[1]) for l in md.splitlines()[2:] if l.startswith("| ")]
+            hidden = re.findall(r"^\((\d+) other options? not shown\)$", md, re.M)
+            total = shown + (int(hidden[0]) if hidden else 0)
+            assert len(hidden) <= 1 and max(ranks) <= total, (scenario, case["EBELN"])
+            assert md.splitlines()[-1] == "All numbers simulated."
+        assert len(data["TABLE_MD"].encode()) < views.MD_MAX_BYTES

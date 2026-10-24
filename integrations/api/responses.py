@@ -208,8 +208,17 @@ def md_rows(case: dict[str, Any], short: bool = False) -> list[dict[str, Any]]:
     return sorted(shown, key=lambda r: r["RANK"])
 
 
+def not_shown_text(count: int) -> str:
+    """The line under TABLE_MD that says how many ranked options the table leaves out, so
+    a jump in the ranks (1, 2, 3, 6) is not read as missing data; empty when none is."""
+    if count <= 0:
+        return ""
+    return f"({count} other option{'' if count == 1 else 's'} not shown)"
+
+
 def table_md(case: dict[str, Any], short: bool = False, explanation: bool = True) -> str:
-    """`md_rows` as a small Markdown table, then the checked model explanation (B5)."""
+    """`md_rows` as a small Markdown table, the count of ranked options not shown, then the
+    checked model explanation (B5)."""
     shown = md_rows(case, short)
     lines = ["| " + " | ".join(MD_COLUMNS) + " |", "|" + "---|" * len(MD_COLUMNS)]
     for r in shown:
@@ -218,6 +227,9 @@ def table_md(case: dict[str, Any], short: bool = False, explanation: bool = True
         lines.append(f"| {r['RANK']} | {supplier} | {money(r['EXPECTED_COST'])} | {notes(r)} |")
     if not shown:
         lines.append("| - | no candidate supplier | - | - |")
+    hidden = not_shown_text(len(case["SCORING"]["CANDIDATES"]) - len(shown))
+    if hidden:
+        lines += ["", hidden]   # blank line first, or Markdown reads it as a table row
     lines += ["", MD_SIMULATED]
     text = case.get("EXPLANATION")
     if explanation and text:
